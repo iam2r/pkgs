@@ -26,7 +26,8 @@
 	"files": [
 		"src",
 		"!src/__tests__",
-		"README.md"
+		"README.md",
+		"CHANGELOG.md"
 	],
 	"type": "module",
 	"main": "./src/index.ts",

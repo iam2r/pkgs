@@ -1,9 +1,15 @@
 name: packages-release
 
-# Single changesets/action workflow. Structure is intentionally identical to
-# cf-workers' packages-release.yml — the only difference is the publish target:
-# this repo publishes to the public npm registry (registry.npmjs.org) instead of
-# GitHub Packages.
+# Single changesets/action workflow. Structure mirrors cf-workers'
+# packages-release.yml, with two deliberate differences:
+#   - the publish target: the public npm registry (registry.npmjs.org) instead
+#     of GitHub Packages;
+#   - changesets/action@v2 instead of @v1, because this repo's Changesets CLI is
+#     v3 and v2 is the action line built for it. The CLI reports every git tag
+#     it creates as an NDJSON event through the CHANGESETS_OUTPUT env var (the
+#     action sets it; release:* inherit it), and only then does the action push
+#     the tag and open the GitHub Release. The v1 action only understands the
+#     CLI v2 output format, so with CLI v3 it tags locally and pushes nothing.
 #
 # On push to main:
 #   - with .changeset/** → consume changesets, bump versions, open/update the
@@ -22,9 +28,8 @@ name: packages-release
 #      "Allow GitHub Actions to create and approve pull requests".
 #
 # There is deliberately no NPM_TOKEN: the release job requests an OIDC id-token
-# that pnpm exchanges for short-lived publish credentials. That is the only
-# difference from cf-workers' workflow, which authenticates to GitHub Packages
-# with the workflow token.
+# that pnpm exchanges for short-lived publish credentials, unlike cf-workers'
+# workflow, which authenticates to GitHub Packages with the workflow token.
 
 on:
   push:
@@ -82,20 +87,21 @@ jobs:
       - name: Install
         run: pnpm install --frozen-lockfile --ignore-scripts
 
-      # version: run when the push has .changeset files → open Version Packages PR
-      # publish: run when that PR merges → build + tag + publish to npm
+      # version-script: run when the push has .changeset files → open Version Packages PR
+      # publish-script: run when that PR merges → build + tag + publish to npm
       - name: Create Release Pull Request or Publish
-        uses: changesets/action@v1
+        uses: changesets/action@v2
         with:
-          version: pnpm release:version
-          publish: pnpm release:full
-          commit: 'chore: version packages'
-          title: 'Version Packages'
-          createGithubReleases: true
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # No NODE_AUTH_TOKEN: pnpm publishes through OIDC trusted publishing
-          # (id-token: write above), so nothing long-lived is stored here.
+          # v2 input names are kebab-case; the old v1 names (version, publish,
+          # commit, title, createGithubReleases) are rejected outright.
+          version-script: pnpm release:version
+          publish-script: pnpm release:full
+          commit-message: 'chore: version packages'
+          pr-title: 'Version Packages'
+          create-github-releases: true
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+        # No NODE_AUTH_TOKEN: pnpm publishes through OIDC trusted publishing
+        # (id-token: write above), so nothing long-lived is stored here.
 
       # The Version Packages PR would otherwise need a manual merge every
       # release. Merge it here automatically once the PR reports MERGEABLE.

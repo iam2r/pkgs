@@ -10,7 +10,7 @@
 		"changeset": "changeset",
 		"release:add": "node scripts/release-add.mjs",
 		"release:version": "pnpm changeset version",
-		"release:tag": "pnpm changeset tag",
+		"release:tag": "pnpm changeset git-tag",
 		"release:publish": "pnpm publish -r --access public",
 		"release:full": "pnpm run build:pkg && pnpm release:tag && pnpm release:publish",
 		"test": "turbo run test --filter='./packages/*'",
