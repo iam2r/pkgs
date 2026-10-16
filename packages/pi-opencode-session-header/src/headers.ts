@@ -8,6 +8,20 @@
 /** Substring matched against `model.id`, case-insensitively. */
 export const MODEL_ID_MATCH = 'opencode';
 
+/**
+ * Normalize a comma-separated match list: trimmed, lowercased, empties dropped.
+ *
+ * Backs `PI_OPENCODE_MODEL_MATCH`, which widens the built-in match so that a
+ * gateway which renames its upstream models can still be recognised.
+ */
+export function parseIdMatches(raw: string | undefined): string[] {
+	if (!raw) return [];
+	return raw
+		.split(',')
+		.map((entry) => entry.trim().toLowerCase())
+		.filter(Boolean);
+}
+
 export const SESSION_HEADER = 'x-opencode-session';
 export const CLIENT_HEADER = 'x-opencode-client';
 export const CLIENT_VALUE = 'pi';
@@ -45,14 +59,18 @@ export function hostnameOf(baseUrl: unknown): string | undefined {
  * True for the models Pi's built-in gate already covers, plus any model id
  * mentioning "opencode" (the case this extension exists for).
  *
+ * `extraIdMatches` adds further substrings, for gateways that rename their
+ * upstream models so their ids no longer say "opencode" at all.
+ *
  * See `pi-coding-agent/dist/core/provider-attribution.js:getSessionHeaders()`
  * for the built-in gate this mirrors and extends.
  */
-export function matchesOpenCodeModel(model: ModelLike): boolean {
+export function matchesOpenCodeModel(model: ModelLike, extraIdMatches: readonly string[] = []): boolean {
 	if (model.provider === 'opencode' || model.provider === 'opencode-go') return true;
 	if (hostnameOf(model.baseUrl) === 'opencode.ai') return true;
 	const id = typeof model.id === 'string' ? model.id.toLowerCase() : '';
-	return id.includes(MODEL_ID_MATCH);
+	// An empty entry would make every model match, so it is never honoured.
+	return id.includes(MODEL_ID_MATCH) || extraIdMatches.some((match) => match !== '' && id.includes(match));
 }
 
 /**
@@ -61,8 +79,13 @@ export function matchesOpenCodeModel(model: ModelLike): boolean {
  *
  * @returns true when at least one header was written.
  */
-export function injectSessionHeaders(headers: Headers, model: ModelLike, value: string | undefined): boolean {
-	if (!value || !matchesOpenCodeModel(model)) return false;
+export function injectSessionHeaders(
+	headers: Headers,
+	model: ModelLike,
+	value: string | undefined,
+	extraIdMatches: readonly string[] = [],
+): boolean {
+	if (!value || !matchesOpenCodeModel(model, extraIdMatches)) return false;
 
 	let injected = false;
 	if (!hasHeader(headers, SESSION_HEADER)) {

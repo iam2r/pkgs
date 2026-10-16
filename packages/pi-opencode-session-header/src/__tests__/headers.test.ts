@@ -7,6 +7,7 @@ import {
 	hostnameOf,
 	injectSessionHeaders,
 	matchesOpenCodeModel,
+	parseIdMatches,
 	type Headers,
 } from '../headers.ts';
 
@@ -36,6 +37,28 @@ describe('matchesOpenCodeModel', () => {
 	it('does not match unrelated models', () => {
 		expect(matchesOpenCodeModel({ id: 'zmminyong/grok-4.7', provider: 'Agate', baseUrl: 'https://agate.example.org/v1' })).toBe(false);
 		expect(matchesOpenCodeModel({ id: 'claude-sonnet-4-5', provider: 'anthropic', baseUrl: 'https://api.anthropic.com' })).toBe(false);
+	});
+
+	it('matches extra id substrings from PI_OPENCODE_MODEL_MATCH', () => {
+		// A gateway that renamed its upstream models: nothing in the id says
+		// "opencode", so only an explicit extra match can recognise it.
+		const renamed = { id: 'deepseek-v4.1-flash-free', provider: 'Agate', baseUrl: 'https://agate.example.org/v1' };
+		expect(matchesOpenCodeModel(renamed)).toBe(false);
+		expect(matchesOpenCodeModel(renamed, ['deepseek'])).toBe(true);
+		expect(matchesOpenCodeModel(renamed, ['v4.1'])).toBe(true);
+		expect(matchesOpenCodeModel(renamed, ['grok'])).toBe(false);
+	});
+
+	it('keeps the built-in opencode match when extra matches are set', () => {
+		expect(matchesOpenCodeModel(GATEWAY_MODEL, ['deepseek'])).toBe(true);
+	});
+
+	it('never honours an empty extra match, which would match every model', () => {
+		expect(matchesOpenCodeModel({ id: 'zmminyong/grok-4.7', provider: 'Agate' }, [''])).toBe(false);
+	});
+
+	it('accepts extra matches that are already lowercased', () => {
+		expect(matchesOpenCodeModel({ id: 'DeepSeek-V4.1', provider: 'Agate' }, ['deepseek-v4.1'])).toBe(true);
 	});
 
 	it('does not treat a lookalike host as opencode.ai', () => {
@@ -84,6 +107,20 @@ describe('injectSessionHeaders', () => {
 		expect(injectSessionHeaders(headers, { id: 'zmminyong/grok-4.7', provider: 'Agate' }, VALUE)).toBe(false);
 		expect(Object.keys(headers)).toEqual([]);
 	});
+
+	it('injects through an extra id match', () => {
+		const headers: Headers = {};
+		const renamed = { id: 'deepseek-v4.1-flash-free', provider: 'Agate' };
+		expect(injectSessionHeaders(headers, renamed, VALUE, ['deepseek'])).toBe(true);
+		expect(headers[SESSION_HEADER]).toBe(VALUE);
+		expect(headers[CLIENT_HEADER]).toBe('pi');
+	});
+
+	it('injects nothing when only an extra match list is missing', () => {
+		const headers: Headers = {};
+		expect(injectSessionHeaders(headers, { id: 'deepseek-v4.1-flash-free', provider: 'Agate' }, VALUE)).toBe(false);
+		expect(Object.keys(headers)).toEqual([]);
+	});
 });
 
 describe('hasHeader', () => {
@@ -107,5 +144,17 @@ describe('hostnameOf', () => {
 		expect(hostnameOf(undefined)).toBeUndefined();
 		expect(hostnameOf('not a url')).toBeUndefined();
 		expect(hostnameOf(123)).toBeUndefined();
+	});
+});
+
+describe('parseIdMatches', () => {
+	it('splits, trims and lowercases', () => {
+		expect(parseIdMatches(' DeepSeek , v4.1 ,, grok ')).toEqual(['deepseek', 'v4.1', 'grok']);
+	});
+
+	it('is empty for unset or blank input', () => {
+		expect(parseIdMatches(undefined)).toEqual([]);
+		expect(parseIdMatches('')).toEqual([]);
+		expect(parseIdMatches(' , ')).toEqual([]);
 	});
 });

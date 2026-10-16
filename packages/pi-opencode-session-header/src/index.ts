@@ -42,6 +42,10 @@
  *                              declare one `api`; models using another api still
  *                              get layer 1 on the main-agent path.
  *   PI_OPENCODE_SESSION_STYLE  "raw" (default) or "canonical".
+ *   PI_OPENCODE_MODEL_MATCH    extra model-id substrings (comma separated) that
+ *                              count as OpenCode too, for gateways that rename
+ *                              their upstream models. Added to the built-in
+ *                              "opencode" match.
  *   PI_OPENCODE_NO_PROVIDER    set to 1 to disable layer 2 entirely.
  *   PI_OPENCODE_HDR_DEBUG      file path; appends one JSON line per injection.
  */
@@ -51,7 +55,7 @@ import { appendFile } from 'node:fs/promises';
 import { getApiProvider } from '@earendil-works/pi-ai/compat';
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 
-import { injectSessionHeaders, SESSION_HEADER, CLIENT_HEADER, type Headers, type ModelLike } from './headers.ts';
+import { injectSessionHeaders, parseIdMatches, SESSION_HEADER, CLIENT_HEADER, type Headers, type ModelLike } from './headers.ts';
 import { sessionHeaderValue, type SessionIdStyle } from './session-id.ts';
 
 /** Provider ids whose requests get the wrapper. Comma separated. */
@@ -68,6 +72,9 @@ const PROVIDER_LAYER_ENABLED = process.env.PI_OPENCODE_NO_PROVIDER !== '1';
 
 /** Default style; `PI_OPENCODE_SESSION_STYLE=canonical` overrides it per run. */
 const SESSION_ID_STYLE: SessionIdStyle = process.env.PI_OPENCODE_SESSION_STYLE === 'canonical' ? 'canonical' : 'raw';
+
+/** Extra id substrings that also mark a model; see `PI_OPENCODE_MODEL_MATCH`. */
+const EXTRA_ID_MATCHES = parseIdMatches(process.env.PI_OPENCODE_MODEL_MATCH);
 
 /** Opt-in verification log: set to a file path to record what was injected. */
 const DEBUG_FILE = process.env.PI_OPENCODE_HDR_DEBUG;
@@ -109,7 +116,7 @@ export default function (pi: ExtensionAPI) {
 		// Prefer the live id here; the cached one can lag a session switch by the
 		// duration of the event itself.
 		currentSessionId = ctx.sessionManager.getSessionId() ?? currentSessionId;
-		if (!injectSessionHeaders(event.headers, model, sessionHeaderValue(currentSessionId, SESSION_ID_STYLE))) return;
+		if (!injectSessionHeaders(event.headers, model, sessionHeaderValue(currentSessionId, SESSION_ID_STYLE), EXTRA_ID_MATCHES)) return;
 
 		await debugLog(describeInjection('event', model, event.headers));
 	});
@@ -142,7 +149,7 @@ export default function (pi: ExtensionAPI) {
 
 						const headers: Headers = { ...(options?.headers ?? {}) };
 						const value = sessionHeaderValue(currentSessionId, SESSION_ID_STYLE);
-						if (injectSessionHeaders(headers, model, value)) {
+						if (injectSessionHeaders(headers, model, value, EXTRA_ID_MATCHES)) {
 							void debugLog(describeInjection('provider', model, headers));
 						}
 						return api.streamSimple(model, context, { ...options, headers });

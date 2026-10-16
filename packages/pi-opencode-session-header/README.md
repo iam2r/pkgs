@@ -50,6 +50,11 @@ A request gets the header when **any** of these hold:
 It appends `x-opencode-session` (the session id, see below) plus
 `x-opencode-client: pi`, and never overwrites a header another layer already set.
 
+The id rule is the one that breaks in practice, because a gateway need not keep the
+upstream model name: `deepseek-v4.1-flash-free`, with no `opencode` anywhere in it,
+matches nothing above. Set `PI_OPENCODE_MODEL_MATCH` to a comma-separated list of
+extra substrings (for example `deepseek,v4.1`) and those ids are recognised too.
+
 ## Two layers
 
 Neither mechanism covers every request path on its own, so both are installed.
@@ -79,6 +84,7 @@ All optional, via environment variables.
 | `PI_OPENCODE_PROVIDER`      | `Agate`              | Provider id(s) to wrap, comma separated.                                                                                                         |
 | `PI_OPENCODE_API`           | `openai-completions` | The api id the wrapper handles. A provider config can only declare one `api`; models using another api still get layer 1 on the main-agent path. |
 | `PI_OPENCODE_SESSION_STYLE` | `raw`                | `raw` forwards Pi's session id verbatim. `canonical` derives a `ses_…` id instead.                                                               |
+| `PI_OPENCODE_MODEL_MATCH`   | _(unset)_            | Extra model-id substrings (comma separated) that also count as OpenCode, for gateways that rename them.                                          |
 | `PI_OPENCODE_NO_PROVIDER`   | _(unset)_            | Set to `1` to disable layer 2 and use the event hook alone.                                                                                      |
 | `PI_OPENCODE_HDR_DEBUG`     | _(unset)_            | File path; appends one JSON line per injection.                                                                                                  |
 
