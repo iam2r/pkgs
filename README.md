@@ -57,9 +57,18 @@ Fully automated through changesets — no manual version bumps, no manual publis
    workflow builds, tags and publishes every bumped package to npm, then creates a
    GitHub Release.
 
-Add a package with `npm publish` rights for `@iam2r` as the repo secret
-`NPM_TOKEN`, and enable _Settings → Actions → General → Workflow permissions →
-Allow GitHub Actions to create and approve pull requests_.
+One-time repo setup:
+
+1. Configure npm trusted publishing for each package CI should publish, so it
+   authenticates through OIDC instead of a stored token:
+
+   ```sh
+   npm trust github @iam2r/<package> --file packages-release.yml --repo iam2r/pkgs --allow-publish -y
+   ```
+
+2. Enable _Settings → Actions → General → Workflow permissions → Allow GitHub Actions to create and approve pull requests_.
+
+No `NPM_TOKEN` secret is needed — the release job requests an `id-token` and pnpm exchanges it for short-lived publish credentials.
 
 ## License
 

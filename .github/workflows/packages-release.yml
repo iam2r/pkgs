@@ -14,10 +14,17 @@ name: packages-release
 # On pull_request: run the release-flow guard — packages/** changes must carry
 # a changeset.
 #
-# Repo secrets required:
-#   NPM_TOKEN — an npm Automation token with publish rights for the scope below.
-# Repo setting required: Settings → Actions → General → Workflow permissions →
-# "Allow GitHub Actions to create and approve pull requests".
+# Repo setup required — one-time, and no long-lived secret:
+#   1. Configure npm trusted publishing so this workflow may publish via OIDC:
+#        npm trust github @iam2r/<package> --file packages-release.yml \
+#          --repo iam2r/pkgs --allow-publish -y
+#   2. Settings → Actions → General → Workflow permissions →
+#      "Allow GitHub Actions to create and approve pull requests".
+#
+# There is deliberately no NPM_TOKEN: the release job requests an OIDC id-token
+# that pnpm exchanges for short-lived publish credentials. That is the only
+# difference from cf-workers' workflow, which authenticates to GitHub Packages
+# with the workflow token.
 
 on:
   push:
@@ -48,6 +55,9 @@ jobs:
     permissions:
       contents: write
       pull-requests: write
+      # Lets pnpm exchange a GitHub OIDC token for short-lived npm publish
+      # credentials (trusted publishing) instead of using a stored NPM_TOKEN.
+      id-token: write
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -66,8 +76,8 @@ jobs:
           node-version: 24
           cache: pnpm
           # Diff vs cf-workers: public npm instead of npm.pkg.github.com.
-          registry-url: https://registry.npmjs.org
-          scope: '@iam2r'
+          # No registry-url here — it would write an ${NODE_AUTH_TOKEN}
+          # placeholder into .npmrc, and authentication comes from OIDC instead.
 
       - name: Install
         run: pnpm install --frozen-lockfile --ignore-scripts
@@ -84,8 +94,8 @@ jobs:
           createGithubReleases: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Diff vs cf-workers (was secrets.GITHUB_TOKEN for GitHub Packages).
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          # No NODE_AUTH_TOKEN: pnpm publishes through OIDC trusted publishing
+          # (id-token: write above), so nothing long-lived is stored here.
 
       # The Version Packages PR would otherwise need a manual merge every
       # release. Merge it here automatically once the PR reports MERGEABLE.
