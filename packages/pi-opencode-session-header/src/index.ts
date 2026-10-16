@@ -25,8 +25,8 @@
  *      `ctx.modelRegistry.streamSimple` directly, which other extensions do for
  *      side requests (e.g. pi-subagents' pruned-fork summaries). It is installed
  *      while this factory runs *and* re-asserted on every `session_start`,
- *      because the host's own bootstrap replaces the api-registry entry written
- *      during extension loading. See `api-registry.ts`.
+ *      because `AgentSession.reload()` clears api overrides with
+ *      `resetApiProviders()`. See `api-registry.ts`.
  *
  * Layer 2 deliberately is not a `pi.registerProvider(...)` call: a named provider
  * registration made after extension loading only appends to
@@ -55,6 +55,7 @@ import type { StreamFn } from './api-layer.ts';
 import { createApiInstaller } from './api-registry.ts';
 import { injectSessionHeaders, parseIdMatches, SESSION_HEADER, CLIENT_HEADER, type Headers, type ModelLike } from './headers.ts';
 import { sessionHeaderValue, type SessionIdStyle } from './session-id.ts';
+import { resolveSessionId, type SessionIdSource } from './session-source.ts';
 
 /** api ids layer 2 wraps. Comma separated. */
 const WRAPPED_APIS = parseIdMatches(process.env.PI_OPENCODE_API ?? 'openai-completions');
@@ -79,6 +80,19 @@ const DEBUG_FILE = process.env.PI_OPENCODE_HDR_DEBUG;
  * fork, reload) because the api wrapper runs outside any event context.
  */
 let currentSessionId: string | undefined;
+
+/** Session manager from the most recent event, for the lazy id fallback. */
+let currentCtx: SessionIdSource | undefined;
+
+/**
+ * Session id for a layer-2 request: the cache when it is populated, otherwise
+ * the live session. See `session-source.ts`.
+ */
+function currentOrLiveSessionId(): string | undefined {
+	const resolved = resolveSessionId(currentSessionId, currentCtx);
+	if (resolved) currentSessionId = resolved;
+	return resolved;
+}
 
 async function debugLog(entry: Record<string, unknown>): Promise<void> {
 	if (!DEBUG_FILE) return;
@@ -124,7 +138,7 @@ const installer = createApiInstaller({
 	apis: WRAPPED_APIS,
 	sourceId: API_SOURCE,
 	layer: {
-		getSessionId: () => currentSessionId,
+		getSessionId: currentOrLiveSessionId,
 		style: SESSION_ID_STYLE,
 		extraIdMatches: EXTRA_ID_MATCHES,
 		onInject: (layer, model, headers) => void debugLog(describeInjection(layer, model, headers)),
@@ -140,15 +154,19 @@ export default function (pi: ExtensionAPI) {
 
 		// Prefer the live id here; the cached one can lag a session switch by the
 		// duration of the event itself.
-		currentSessionId = ctx.sessionManager.getSessionId() ?? currentSessionId;
+		currentCtx = ctx.sessionManager;
+		const live = ctx.sessionManager.getSessionId();
+		currentSessionId = live ?? currentSessionId;
 		if (!injectSessionHeaders(event.headers, model, sessionHeaderValue(currentSessionId, SESSION_ID_STYLE), EXTRA_ID_MATCHES)) return;
 
 		await debugLog(describeInjection('event', model, event.headers));
 	});
 
-	// Layer 2: the session id the api wrapper sends. A side request can happen
-	// before any main-agent request, so this must not depend on layer 1 firing.
+	// Layer 2: the session id the api wrapper sends, plus the wrapper itself. A
+	// side request can arrive before any main-agent request, so neither may depend
+	// on layer 1 firing.
 	pi.on('session_start', (_event, ctx) => {
+		currentCtx = ctx.sessionManager;
 		currentSessionId = ctx.sessionManager.getSessionId() ?? currentSessionId;
 
 		// Re-assert the wrapper here: the host's own bootstrap runs after the

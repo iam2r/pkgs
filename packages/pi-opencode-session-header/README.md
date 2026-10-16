@@ -93,15 +93,23 @@ again, so it is silently dropped, even though the call returns normally. Wrappin
 api implementation sidesteps that queue, needs no provider id, and covers every
 provider serving that api at once.
 
-Second, one install is not enough: Pi's own bootstrap runs after the extension
-factories and **replaces the api-registry entry written during loading**, so by the
-time a session starts the wrapper is no longer in place. The registry also holds one
-entry per api and does not expose who owns it, so the extension re-installs on every
-`session_start` and uses `unregisterApiProviders()` as its probe: dropping our own
-entry empties the slot while we still own it, and leaves the host's implementation
-visible when we do not — which is then adopted as the new base. The wrapper always
-delegates to a captured base, never to the registry, so repeated installs cannot
-stack wrappers.
+Second, Pi clears api overrides when a session reloads: `AgentSession.reload()`
+(`core/agent-session.js`), which serves `/reload` and session replacement, calls
+`resetApiProviders()` — every registration is dropped and only the built-ins are put
+back. So the wrapper is installed while the factory runs **and** re-asserted on every
+`session_start`. Re-installing is idempotent: the previous entry is dropped first, and
+the wrapper delegates to a captured base instead of to the registry, so installs
+cannot stack.
+
+### Why the session id is read lazily
+
+The api wrapper runs outside any event context, so it needs a session id of its own.
+Caching it at `session_start` is not enough: Pi awaits handlers in load order, so a
+handler that takes time delays every handler after it, and a side request can arrive
+while the id is still unknown — measured with a slow handler ahead of ours, the first
+`ctx.modelRegistry.streamSimple(...)` call went out with no header. The cache is
+refreshed on `session_start` and on every `before_provider_headers`, with the live
+session and the session file name (`<timestamp>_<id>.jsonl`) as fallbacks.
 
 ## Configuration
 
