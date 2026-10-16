@@ -3,7 +3,7 @@
  * release:add — changeset generator.
  *
  * Records a .changeset/*.md change intent for a package so the release flow
- * (packages-all-version → Version Packages PR → packages-all-release) can
+ * (packages-release → Version Packages PR → auto-merge → npm publish) can
  * advance versions. Wraps `pnpm change` / `pnpm changeset`.
  *
  *   pnpm release:add                       # interactive (package, bump, summary)
