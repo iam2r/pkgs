@@ -60,6 +60,10 @@ jobs:
     permissions:
       contents: write
       pull-requests: write
+      # Lets the release job re-trigger this workflow with `gh workflow run`
+      # after it merges the Version Packages PR: that merge is made with
+      # GITHUB_TOKEN, which GitHub deliberately suppresses as a trigger.
+      actions: write
       # Lets pnpm exchange a GitHub OIDC token for short-lived npm publish
       # credentials (trusted publishing) instead of using a stored NPM_TOKEN.
       id-token: write
