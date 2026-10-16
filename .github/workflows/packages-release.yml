@@ -1,0 +1,157 @@
+name: packages-release
+
+# Single changesets/action workflow. Structure is intentionally identical to
+# cf-workers' packages-release.yml — the only difference is the publish target:
+# this repo publishes to the public npm registry (registry.npmjs.org) instead of
+# GitHub Packages.
+#
+# On push to main:
+#   - with .changeset/** → consume changesets, bump versions, open/update the
+#     "Version Packages" PR, then auto-merge it → that merge pushes main again.
+#   - that follow-up push has no .changeset → build + tag + publish to npm,
+#     create GitHub Releases.
+#
+# On pull_request: run the release-flow guard — packages/** changes must carry
+# a changeset.
+#
+# Repo secrets required:
+#   NPM_TOKEN — an npm Automation token with publish rights for the scope below.
+# Repo setting required: Settings → Actions → General → Workflow permissions →
+# "Allow GitHub Actions to create and approve pull requests".
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - '.changeset/**'
+      - 'packages/**'
+      - 'pnpm-lock.yaml'
+  # Release-flow guard: every PR touching packages/** must include a changeset.
+  pull_request:
+    types: [opened, synchronize, reopened]
+  # Manual re-run when the changesets publish step was skipped (e.g. the
+  # Version Packages PR was merged via API and no .changeset change followed).
+  workflow_dispatch:
+
+# Separate groups for the two event families: the push-driven release stays
+# serialized, while each PR's changeset check gets its own group so it never
+# queues behind (or cancels) a publish.
+concurrency:
+  group: changesets-${{ github.event_name }}-${{ github.event.pull_request.number || 'release' }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          # 与 package.json packageManager 对齐（勿再写死 version，否则会 Multiple versions 失败）
+          run_install: false
+
+      - name: Setup Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: pnpm
+          # Diff vs cf-workers: public npm instead of npm.pkg.github.com.
+          registry-url: https://registry.npmjs.org
+          scope: '@iam2r'
+
+      - name: Install
+        run: pnpm install --frozen-lockfile --ignore-scripts
+
+      # version: run when the push has .changeset files → open Version Packages PR
+      # publish: run when that PR merges → build + tag + publish to npm
+      - name: Create Release Pull Request or Publish
+        uses: changesets/action@v1
+        with:
+          version: pnpm release:version
+          publish: pnpm release:full
+          commit: 'chore: version packages'
+          title: 'Version Packages'
+          createGithubReleases: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Diff vs cf-workers (was secrets.GITHUB_TOKEN for GitHub Packages).
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      # The Version Packages PR would otherwise need a manual merge every
+      # release. Merge it here automatically once the PR reports MERGEABLE.
+      # This runs only when changesets/action opened/updated an open PR in this
+      # run (the publish case — PR already merged — leaves no open PR, so it is
+      # a no-op). A public repo could instead use GitHub's native auto-merge
+      # (`gh pr merge --auto`), but the explicit loop works on both.
+      - name: Auto-merge Version Packages PR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          PR=$(gh pr list --repo "$GITHUB_REPOSITORY" --head changeset-release/main \
+            --state open --json number --jq '.[0].number // empty')
+          if [ -z "$PR" ]; then
+            echo "No open Version Packages PR — nothing to merge."
+            exit 0
+          fi
+          for i in $(seq 1 30); do
+            MERGEABLE=$(gh pr view "$PR" --json mergeable --jq '.mergeable')
+            echo "[$i] PR #$PR mergeable=$MERGEABLE"
+            if [ "$MERGEABLE" = "MERGEABLE" ]; then
+              gh pr merge "$PR" --merge --delete-branch=false
+              echo "Merged Version Packages PR #$PR."
+              exit 0
+            fi
+            sleep 20
+          done
+          echo "Timed out waiting for mergeability — leaving PR for manual merge."
+
+  # Release-flow guard: requires every PR touching packages/** to include a
+  # changeset (.changeset/*.md). Without it, main versions never advance — the
+  # release flow is driven by changesets. Chore / docs-only PRs are exempt
+  # (path filter). The changesets/action Version Packages PR
+  # (changeset-release/main) bumps versions under packages/** but adds no
+  # changeset — skip it so its own check can't block the release.
+  changeset-check:
+    if: github.event_name == 'pull_request' && github.head_ref != 'changeset-release/main'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      # True when any package source file changed.
+      - name: Detect package changes
+        id: paths
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            packages:
+              - 'packages/**'
+              - 'pnpm-lock.yaml'
+
+      - name: Check changeset present
+        if: steps.paths.outputs.packages == 'true'
+        run: |
+          set -euo pipefail
+          # Compare against the base branch: a changeset file must have been
+          # added (or modified) by this PR.
+          BASE_REF="${GITHUB_BASE_REF:-main}"
+          CHANGESET_FILES=$(git diff --name-only "origin/${BASE_REF}...HEAD" -- '.changeset/*.md')
+          if [ -z "$CHANGESET_FILES" ]; then
+            echo "::error::No changeset found. Run 'pnpm changeset' and commit the .changeset/*.md file."
+            echo "Packages changed but no .changeset/*.md was added."
+            exit 1
+          fi
+          echo "Changeset found: $CHANGESET_FILES"

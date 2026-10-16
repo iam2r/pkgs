@@ -1,0 +1,10 @@
+{
+	"printWidth": 140,
+	"singleQuote": true,
+	"semi": true,
+	"useTabs": true,
+	"endOfLine": "lf",
+	"sortImports": {},
+	"sortPackageJson": {},
+	"ignorePatterns": ["**/dist", "**/*.min.js", "**/*.min.css", "node_modules", ".DS_Store", "worker-configuration.d.ts", "packages/*/pkg/"]
+}

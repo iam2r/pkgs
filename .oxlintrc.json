@@ -1,0 +1,61 @@
+{
+	"$schema": "./node_modules/oxlint/configuration_schema.json",
+	"plugins": ["import", "vitest", "unicorn", "typescript", "oxc"],
+	"categories": {
+		"correctness": "deny",
+		"suspicious": "warn",
+		"perf": "warn"
+	},
+	"ignorePatterns": ["**/dist", "**/*.min.js", "**/*.min.css", "**/coverage/**"],
+	"env": {
+		"node": true
+	},
+	"rules": {
+		"no-underscore-dangle": "allow",
+		"no-await-in-loop": "allow",
+		"no-floating-promises": "allow",
+		"no-constant-binary-expression": "allow",
+		"no-loss-of-precision": "allow",
+		"no-unused-expressions": "allow",
+		"no-unused-vars": "allow",
+		"no-useless-catch": "allow",
+		"await-thenable": "allow",
+		"no-base-to-string": "allow",
+		"no-redundant-type-constituents": "allow",
+		"no-useless-default-assignment": "allow",
+		"restrict-template-expressions": "allow",
+		"unbound-method": "allow",
+		"import/default": "allow",
+		"typescript/no-misused-spread": "allow",
+		"oxc/const-comparisons": "allow",
+		"oxc/only-used-in-recursion": "allow",
+		"unicorn/no-useless-fallback-in-spread": "allow",
+		"vitest/expect-expect": "allow",
+		"vitest/no-conditional-expect": "allow",
+		"vitest/no-conditional-tests": "allow",
+		"vitest/require-mock-type-parameters": "allow",
+
+		"typescript/no-unsafe-type-assertion": "off",
+		"eslint/no-shadow": "off",
+		"unicorn/consistent-function-scoping": "off",
+		"typescript/consistent-return": "off",
+		"unicorn/prefer-add-event-listener": "off",
+		"import/no-unassigned-import": "off",
+		"oxc/no-map-spread": "off",
+		"typescript/no-unnecessary-type-parameters": "off",
+		"unicorn/require-post-message-target-origin": "off",
+		"oxc/no-async-endpoint-handlers": "off",
+		"oxc/no-accumulating-spread": "off",
+		"typescript/no-unnecessary-type-conversion": "off",
+		"oxc/approx-constant": "off",
+		"eslint/no-useless-concat": "off",
+		"import/no-named-as-default": "off",
+		"eslint/no-unmodified-loop-condition": "off",
+		"typescript/no-extraneous-class": "off",
+		"import/no-named-as-default-member": "off",
+
+		// Conflicts with tsconfig.app.json lib ES2022: --fix rewrites sort→toSorted (ES2023),
+		// then package `tsc` fails. Keep Array#sort until lib bumps to ES2023.
+		"unicorn/no-array-sort": "off"
+	}
+}
