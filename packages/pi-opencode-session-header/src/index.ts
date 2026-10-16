@@ -23,13 +23,15 @@
  *   2. An api-level wrapper installed with `registerApiProvider()` — covers
  *      callers that bypass that builder and reach
  *      `ctx.modelRegistry.streamSimple` directly, which other extensions do for
- *      side requests (e.g. pi-subagents' pruned-fork summaries).
+ *      side requests (e.g. pi-subagents' pruned-fork summaries). It is installed
+ *      while this factory runs *and* re-asserted on every `session_start`,
+ *      because the host's own bootstrap replaces the api-registry entry written
+ *      during extension loading. See `api-registry.ts`.
  *
- * Layer 2 must be installed *while this factory runs*: a named
- * `pi.registerProvider(...)` call made later (say from a `session_start`
- * handler) only appends to `runtime.pendingProviderRegistrations`, and the host
- * flushes that queue once, at extension-load time, so such a call is silently
- * dropped. See `api-layer.ts` for the trace; `README.md` has the same note.
+ * Layer 2 deliberately is not a `pi.registerProvider(...)` call: a named provider
+ * registration made after extension loading only appends to
+ * `runtime.pendingProviderRegistrations`, and the host drains that queue once,
+ * while extensions load — so such a call returns normally and does nothing.
  *
  * Configuration (all optional):
  *   PI_OPENCODE_API            api id(s) layer 2 wraps, comma separated.
@@ -45,11 +47,12 @@
 
 import { appendFile } from 'node:fs/promises';
 
-import { getApiProvider, registerApiProvider } from '@earendil-works/pi-ai/compat';
+import { getApiProvider, registerApiProvider, unregisterApiProviders } from '@earendil-works/pi-ai/compat';
 import type { ApiStreamFunction, ApiStreamSimpleFunction } from '@earendil-works/pi-ai/compat';
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 
-import { isWrapped, wrapApiImplementation, type StreamFn } from './api-layer.ts';
+import type { StreamFn } from './api-layer.ts';
+import { createApiInstaller } from './api-registry.ts';
 import { injectSessionHeaders, parseIdMatches, SESSION_HEADER, CLIENT_HEADER, type Headers, type ModelLike } from './headers.ts';
 import { sessionHeaderValue, type SessionIdStyle } from './session-id.ts';
 
@@ -101,55 +104,33 @@ function describeInjection(layer: string, model: ModelLike, headers: Headers): R
 
 /**
  * Layer 2: wrap the api implementation so every caller is covered, including
- * direct `ctx.modelRegistry.streamSimple` calls.
- *
- * Runs during extension loading, which is the only time the host still applies a
- * provider registration; wrapping the api implementation sidesteps that queue
- * and needs no provider id at all.
+ * direct `ctx.modelRegistry.streamSimple` calls. Installed while this factory
+ * runs and re-asserted on every `session_start`; see `api-registry.ts`.
  */
-function installApiLayer(): void {
-	for (const api of WRAPPED_APIS) {
-		try {
-			const base = getApiProvider(api) as { stream: StreamFn; streamSimple: StreamFn } | undefined;
-
-			if (!base) {
-				void debugLog({ at: new Date().toISOString(), layer: 'api-missing', api });
-				continue;
-			}
-			if (typeof base.stream !== 'function' || typeof base.streamSimple !== 'function') {
-				void debugLog({ at: new Date().toISOString(), layer: 'api-incomplete', api });
-				continue;
-			}
-			// A reload can run this factory twice; never wrap our own wrapper.
-			if (isWrapped(base.stream) || isWrapped(base.streamSimple)) continue;
-
-			const wrapped = wrapApiImplementation(base, {
-				getSessionId: () => currentSessionId,
-				style: SESSION_ID_STYLE,
-				extraIdMatches: EXTRA_ID_MATCHES,
-				onInject: (layer, model, headers) => void debugLog(describeInjection(layer, model, headers)),
-			});
-
+const installer = createApiInstaller({
+	registry: {
+		get: (api) => getApiProvider(api) as { stream: StreamFn; streamSimple: StreamFn } | undefined,
+		register: (api, implementation, sourceId) =>
 			registerApiProvider(
 				{
 					api: api,
-					stream: wrapped.stream as unknown as ApiStreamFunction,
-					streamSimple: wrapped.streamSimple as unknown as ApiStreamSimpleFunction,
+					stream: implementation.stream as unknown as ApiStreamFunction,
+					streamSimple: implementation.streamSimple as unknown as ApiStreamSimpleFunction,
 				},
-				API_SOURCE,
-			);
-			void debugLog({ at: new Date().toISOString(), layer: 'api-installed', api });
-		} catch (error) {
-			// Never let a wrapper failure break the session; layer 1 still applies.
-			void debugLog({
-				at: new Date().toISOString(),
-				layer: 'api-failed',
-				api,
-				error: error instanceof Error ? error.message : String(error),
-			});
-		}
-	}
-}
+				sourceId,
+			),
+		unregister: (sourceId) => unregisterApiProviders(sourceId),
+	},
+	apis: WRAPPED_APIS,
+	sourceId: API_SOURCE,
+	layer: {
+		getSessionId: () => currentSessionId,
+		style: SESSION_ID_STYLE,
+		extraIdMatches: EXTRA_ID_MATCHES,
+		onInject: (layer, model, headers) => void debugLog(describeInjection(layer, model, headers)),
+	},
+	report: (event) => void debugLog({ at: new Date().toISOString(), ...event }),
+});
 
 export default function (pi: ExtensionAPI) {
 	// Layer 1: the official event, main-agent path.
@@ -169,8 +150,12 @@ export default function (pi: ExtensionAPI) {
 	// before any main-agent request, so this must not depend on layer 1 firing.
 	pi.on('session_start', (_event, ctx) => {
 		currentSessionId = ctx.sessionManager.getSessionId() ?? currentSessionId;
+
+		// Re-assert the wrapper here: the host's own bootstrap runs after the
+		// extension factories and replaces the api-registry entry installed then.
+		if (API_LAYER_ENABLED) installer();
 	});
 
 	if (!API_LAYER_ENABLED) return;
-	installApiLayer();
+	installer();
 }

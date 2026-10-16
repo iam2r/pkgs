@@ -73,9 +73,11 @@ Neither mechanism covers every request path on its own, so both are installed.
 Both layers are idempotent with each other: whichever sees the request first sets the
 headers, and the second one finds nothing left to add.
 
-### Why layer 2 is installed while the extension loads
+### Why layer 2 is re-asserted on every session
 
-Layer 2 cannot be a named provider registration:
+Two host behaviours shape this layer.
+
+First, it cannot be a named provider registration:
 
 ```js
 // pi-coding-agent/dist/core/extensions/loader.js
@@ -88,9 +90,18 @@ The host drains `pendingProviderRegistrations` once, at extension-load time
 (`extensions/runner.js:bindCore()`). A `pi.registerProvider(...)` call made _after_
 that — from a `session_start` handler, say — only appends to a queue nobody reads
 again, so it is silently dropped, even though the call returns normally. Wrapping the
-api implementation sidesteps the queue: `registerApiProvider()` is last-write-wins,
-so capturing the current implementation and delegating to it is safe, and it works
-for every provider at once instead of one id at a time.
+api implementation sidesteps that queue, needs no provider id, and covers every
+provider serving that api at once.
+
+Second, one install is not enough: Pi's own bootstrap runs after the extension
+factories and **replaces the api-registry entry written during loading**, so by the
+time a session starts the wrapper is no longer in place. The registry also holds one
+entry per api and does not expose who owns it, so the extension re-installs on every
+`session_start` and uses `unregisterApiProviders()` as its probe: dropping our own
+entry empties the slot while we still own it, and leaves the host's implementation
+visible when we do not — which is then adopted as the new base. The wrapper always
+delegates to a captured base, never to the registry, so repeated installs cannot
+stack wrappers.
 
 ## Configuration
 
@@ -128,8 +139,10 @@ PI_OPENCODE_HDR_DEBUG=/tmp/oc-headers.log pi -e npm:@iam2r/pi-opencode-session-h
 ```
 
 Each injected request appends a line naming the layer (`event` or `api`), the model
-and the header values actually sent. Two other lines say whether layer 2 installed
-itself (`api-installed`) or could not (`api-missing`, `api-incomplete`).
+and the header values actually sent. Other lines report the layer-2 install:
+`api-installed` (fresh wrapper, or a new base after the host replaced ours),
+`api-reinstalled` (re-asserted unchanged on `session_start`), `api-missing`,
+`api-incomplete`, `api-failed`.
 
 A request is only ever modified when an injection line appears for it.
 
