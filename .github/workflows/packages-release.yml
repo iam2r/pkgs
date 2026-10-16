@@ -110,6 +110,7 @@ jobs:
       # a no-op). A public repo could instead use GitHub's native auto-merge
       # (`gh pr merge --auto`), but the explicit loop works on both.
       - name: Auto-merge Version Packages PR
+        id: automerge
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -126,11 +127,24 @@ jobs:
             if [ "$MERGEABLE" = "MERGEABLE" ]; then
               gh pr merge "$PR" --merge --delete-branch=false
               echo "Merged Version Packages PR #$PR."
+              echo "merged=true" >> "$GITHUB_OUTPUT"
               exit 0
             fi
             sleep 20
           done
           echo "Timed out waiting for mergeability — leaving PR for manual merge."
+
+      # A merge made with GITHUB_TOKEN emits no push event: GitHub suppresses
+      # runs caused by that token so a workflow cannot retrigger itself. Without
+      # this step the release would stop at "versions bumped" and never reach the
+      # publish half of the workflow. workflow_dispatch is not suppressed, so ask
+      # for the publish run explicitly. Repeating it is safe — that run finds no
+      # open Version Packages PR, so it never dispatches again.
+      - name: Publish the merged release
+        if: steps.automerge.outputs.merged == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh workflow run packages-release.yml --repo "$GITHUB_REPOSITORY" --ref main
 
   # Release-flow guard: requires every PR touching packages/** to include a
   # changeset (.changeset/*.md). Without it, main versions never advance — the
