@@ -65,34 +65,48 @@ Neither mechanism covers every request path on its own, so both are installed.
    Extensions do that for side requests (pi-subagents' pruned-fork summaries, for
    example), and those would reach the gateway with no session header.
 
-2. **A registered provider wrapper** — `pi.registerProvider(<provider>, { api,
-   streamSimple })` whose `streamSimple` injects and then delegates to the real API
-   implementation via `getApiProvider`. This sits at the model-registry layer, so
-   **every** caller is covered, including direct `streamSimple` calls.
+2. **An api-level wrapper** — `registerApiProvider()` around the api implementation
+   named by `PI_OPENCODE_API` (default `openai-completions`). It injects for matching
+   models and delegates to the implementation it captured, so it sits **below** every
+   caller and needs no knowledge of which provider serves the model.
 
-The wrapper is additive: registering a provider that declares no `models` array
-leaves your existing `baseUrl`, `apiKey` and model list untouched. It is registered
-only when the provider already exists (and is wrapped in a guard), so this extension
-is inert on machines that don't configure one.
+Both layers are idempotent with each other: whichever sees the request first sets the
+headers, and the second one finds nothing left to add.
+
+### Why layer 2 is installed while the extension loads
+
+Layer 2 cannot be a named provider registration:
+
+```js
+// pi-coding-agent/dist/core/extensions/loader.js
+registerProvider: (name, config, extensionPath) => {
+	runtime.pendingProviderRegistrations.push({ name, config, extensionPath });
+};
+```
+
+The host drains `pendingProviderRegistrations` once, at extension-load time
+(`extensions/runner.js:bindCore()`). A `pi.registerProvider(...)` call made _after_
+that — from a `session_start` handler, say — only appends to a queue nobody reads
+again, so it is silently dropped, even though the call returns normally. Wrapping the
+api implementation sidesteps the queue: `registerApiProvider()` is last-write-wins,
+so capturing the current implementation and delegating to it is safe, and it works
+for every provider at once instead of one id at a time.
 
 ## Configuration
 
 All optional, via environment variables.
 
-| Variable                    | Default              | Meaning                                                                                                                                          |
-| --------------------------- | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `PI_OPENCODE_PROVIDER`      | `Agate`              | Provider id(s) to wrap, comma separated.                                                                                                         |
-| `PI_OPENCODE_API`           | `openai-completions` | The api id the wrapper handles. A provider config can only declare one `api`; models using another api still get layer 1 on the main-agent path. |
-| `PI_OPENCODE_SESSION_STYLE` | `raw`                | `raw` forwards Pi's session id verbatim. `canonical` derives a `ses_…` id instead.                                                               |
-| `PI_OPENCODE_MODEL_MATCH`   | _(unset)_            | Extra model-id substrings (comma separated) that also count as OpenCode, for gateways that rename them.                                          |
-| `PI_OPENCODE_NO_PROVIDER`   | _(unset)_            | Set to `1` to disable layer 2 and use the event hook alone.                                                                                      |
-| `PI_OPENCODE_HDR_DEBUG`     | _(unset)_            | File path; appends one JSON line per injection.                                                                                                  |
+| Variable                    | Default              | Meaning                                                                                                        |
+| --------------------------- | -------------------- | -------------------------------------------------------------------------------------------------------------- |
+| `PI_OPENCODE_API`           | `openai-completions` | Api id(s) layer 2 wraps, comma separated. Every provider serving a model with one of these api ids is covered. |
+| `PI_OPENCODE_SESSION_STYLE` | `raw`                | `raw` forwards Pi's session id verbatim. `canonical` derives a `ses_…` id instead.                             |
+| `PI_OPENCODE_MODEL_MATCH`   | _(unset)_            | Extra model-id substrings (comma separated) that also count as OpenCode, for gateways that rename them.        |
+| `PI_OPENCODE_NO_PROVIDER`   | _(unset)_            | Set to `1` to disable layer 2 and use the event hook alone.                                                    |
+| `PI_OPENCODE_HDR_DEBUG`     | _(unset)_            | File path; appends one JSON line per injection, plus one per layer-2 install.                                  |
 
-`PI_OPENCODE_PROVIDER` defaults to `Agate`, the gateway this extension was written
-for. On any other machine set it to your own provider id
-(`PI_OPENCODE_PROVIDER=my-gateway`): otherwise layer 2 is never registered and you
-get layer 1 only — enough for the main agent, but not for the direct `streamSimple`
-side requests described above.
+Set `PI_OPENCODE_API` if your gateway speaks a different api (for example
+`anthropic-messages` or `openai-responses`). Unlike the event hook, layer 2 sees only
+the api ids it is told about.
 
 ### `raw` vs `canonical`
 
@@ -113,8 +127,11 @@ upstream only requires a stable opaque key.
 PI_OPENCODE_HDR_DEBUG=/tmp/oc-headers.log pi -e npm:@iam2r/pi-opencode-session-header
 ```
 
-Each injected request appends a line naming the layer, the model and the header
-values actually sent. No request is modified unless a line appears.
+Each injected request appends a line naming the layer (`event` or `api`), the model
+and the header values actually sent. Two other lines say whether layer 2 installed
+itself (`api-installed`) or could not (`api-missing`, `api-incomplete`).
+
+A request is only ever modified when an injection line appears for it.
 
 ## License
 

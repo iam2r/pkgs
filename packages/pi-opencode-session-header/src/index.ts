@@ -17,30 +17,23 @@
  *
  * Two layers, because neither covers every request path on its own:
  *
- *   1. `before_provider_headers` — the official event. It is emitted only from
- *      the coding-agent SDK's request-options builder, so it covers the main
- *      agent loop but NOT callers that invoke `ctx.modelRegistry.streamSimple`
- *      directly. Extensions do that for side requests (e.g. pi-subagents'
- *      pruned-fork summaries), and those requests would reach OpenCode with no
- *      session header.
+ *   1. `before_provider_headers` — the official event, emitted from the SDK's
+ *      request-options builder. Covers the main agent loop.
  *
- *   2. A registered provider wrapper — `pi.registerProvider(<provider>, …)` with
- *      a `streamSimple` that injects and delegates to the real API
- *      implementation via `getApiProvider`. This sits at the registry layer, so
- *      every caller is covered, including the direct `streamSimple` path above.
- *      It composes with the existing `models.json` entry: a registered provider
- *      that declares no `models` array leaves baseUrl, apiKey and the model list
- *      intact.
+ *   2. An api-level wrapper installed with `registerApiProvider()` — covers
+ *      callers that bypass that builder and reach
+ *      `ctx.modelRegistry.streamSimple` directly, which other extensions do for
+ *      side requests (e.g. pi-subagents' pruned-fork summaries).
+ *
+ * Layer 2 must be installed *while this factory runs*: a named
+ * `pi.registerProvider(...)` call made later (say from a `session_start`
+ * handler) only appends to `runtime.pendingProviderRegistrations`, and the host
+ * flushes that queue once, at extension-load time, so such a call is silently
+ * dropped. See `api-layer.ts` for the trace; `README.md` has the same note.
  *
  * Configuration (all optional):
- *   PI_OPENCODE_PROVIDER       provider id(s) to wrap, comma separated.
- *                              Default "Agate". The wrapper is only registered
- *                              when that provider already exists, so this file
- *                              is inert on machines without it.
- *   PI_OPENCODE_API            api id the wrapper handles. Default
- *                              "openai-completions". A provider config can only
- *                              declare one `api`; models using another api still
- *                              get layer 1 on the main-agent path.
+ *   PI_OPENCODE_API            api id(s) layer 2 wraps, comma separated.
+ *                              Default "openai-completions".
  *   PI_OPENCODE_SESSION_STYLE  "raw" (default) or "canonical".
  *   PI_OPENCODE_MODEL_MATCH    extra model-id substrings (comma separated) that
  *                              count as OpenCode too, for gateways that rename
@@ -52,23 +45,22 @@
 
 import { appendFile } from 'node:fs/promises';
 
-import { getApiProvider } from '@earendil-works/pi-ai/compat';
+import { getApiProvider, registerApiProvider } from '@earendil-works/pi-ai/compat';
+import type { ApiStreamFunction, ApiStreamSimpleFunction } from '@earendil-works/pi-ai/compat';
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 
+import { isWrapped, wrapApiImplementation, type StreamFn } from './api-layer.ts';
 import { injectSessionHeaders, parseIdMatches, SESSION_HEADER, CLIENT_HEADER, type Headers, type ModelLike } from './headers.ts';
 import { sessionHeaderValue, type SessionIdStyle } from './session-id.ts';
 
-/** Provider ids whose requests get the wrapper. Comma separated. */
-const WRAPPED_PROVIDERS = (process.env.PI_OPENCODE_PROVIDER ?? 'Agate')
-	.split(',')
-	.map((entry) => entry.trim())
-	.filter(Boolean);
-
-/** The one api id the provider wrapper handles; see the header comment. */
-const WRAPPED_API = process.env.PI_OPENCODE_API ?? 'openai-completions';
+/** api ids layer 2 wraps. Comma separated. */
+const WRAPPED_APIS = parseIdMatches(process.env.PI_OPENCODE_API ?? 'openai-completions');
 
 /** Set `PI_OPENCODE_NO_PROVIDER=1` to fall back to the event hook alone. */
-const PROVIDER_LAYER_ENABLED = process.env.PI_OPENCODE_NO_PROVIDER !== '1';
+const API_LAYER_ENABLED = process.env.PI_OPENCODE_NO_PROVIDER !== '1';
+
+/** Identifies our registrations in the host's api registry. */
+const API_SOURCE = 'pi-opencode-session-header';
 
 /** Default style; `PI_OPENCODE_SESSION_STYLE=canonical` overrides it per run. */
 const SESSION_ID_STYLE: SessionIdStyle = process.env.PI_OPENCODE_SESSION_STYLE === 'canonical' ? 'canonical' : 'raw';
@@ -81,7 +73,7 @@ const DEBUG_FILE = process.env.PI_OPENCODE_HDR_DEBUG;
 
 /**
  * Latest session id, refreshed on every `session_start` (startup, new, resume,
- * fork, reload) because the registry wrapper runs outside any event context.
+ * fork, reload) because the api wrapper runs outside any event context.
  */
 let currentSessionId: string | undefined;
 
@@ -107,6 +99,58 @@ function describeInjection(layer: string, model: ModelLike, headers: Headers): R
 	};
 }
 
+/**
+ * Layer 2: wrap the api implementation so every caller is covered, including
+ * direct `ctx.modelRegistry.streamSimple` calls.
+ *
+ * Runs during extension loading, which is the only time the host still applies a
+ * provider registration; wrapping the api implementation sidesteps that queue
+ * and needs no provider id at all.
+ */
+function installApiLayer(): void {
+	for (const api of WRAPPED_APIS) {
+		try {
+			const base = getApiProvider(api) as { stream: StreamFn; streamSimple: StreamFn } | undefined;
+
+			if (!base) {
+				void debugLog({ at: new Date().toISOString(), layer: 'api-missing', api });
+				continue;
+			}
+			if (typeof base.stream !== 'function' || typeof base.streamSimple !== 'function') {
+				void debugLog({ at: new Date().toISOString(), layer: 'api-incomplete', api });
+				continue;
+			}
+			// A reload can run this factory twice; never wrap our own wrapper.
+			if (isWrapped(base.stream) || isWrapped(base.streamSimple)) continue;
+
+			const wrapped = wrapApiImplementation(base, {
+				getSessionId: () => currentSessionId,
+				style: SESSION_ID_STYLE,
+				extraIdMatches: EXTRA_ID_MATCHES,
+				onInject: (layer, model, headers) => void debugLog(describeInjection(layer, model, headers)),
+			});
+
+			registerApiProvider(
+				{
+					api: api,
+					stream: wrapped.stream as unknown as ApiStreamFunction,
+					streamSimple: wrapped.streamSimple as unknown as ApiStreamSimpleFunction,
+				},
+				API_SOURCE,
+			);
+			void debugLog({ at: new Date().toISOString(), layer: 'api-installed', api });
+		} catch (error) {
+			// Never let a wrapper failure break the session; layer 1 still applies.
+			void debugLog({
+				at: new Date().toISOString(),
+				layer: 'api-failed',
+				api,
+				error: error instanceof Error ? error.message : String(error),
+			});
+		}
+	}
+}
+
 export default function (pi: ExtensionAPI) {
 	// Layer 1: the official event, main-agent path.
 	pi.on('before_provider_headers', async (event, ctx) => {
@@ -121,50 +165,12 @@ export default function (pi: ExtensionAPI) {
 		await debugLog(describeInjection('event', model, event.headers));
 	});
 
-	// Layer 2: registry-level wrapper. Covers callers that bypass the SDK's
-	// request-options builder (direct `ctx.modelRegistry.streamSimple`).
-	if (!PROVIDER_LAYER_ENABLED) return;
+	// Layer 2: the session id the api wrapper sends. A side request can happen
+	// before any main-agent request, so this must not depend on layer 1 firing.
+	pi.on('session_start', (_event, ctx) => {
+		currentSessionId = ctx.sessionManager.getSessionId() ?? currentSessionId;
+	});
 
-	for (const providerId of WRAPPED_PROVIDERS) {
-		let registered = false;
-
-		pi.on('session_start', async (_event, ctx) => {
-			currentSessionId = ctx.sessionManager.getSessionId() ?? currentSessionId;
-			if (registered) return;
-
-			// Register only once the provider actually exists, so an unconfigured
-			// provider cannot fail pi startup.
-			try {
-				if (!ctx.modelRegistry.getProvider(providerId)) return;
-			} catch {
-				return;
-			}
-
-			try {
-				pi.registerProvider(providerId, {
-					api: WRAPPED_API,
-					streamSimple(model, context, options) {
-						const api = getApiProvider(model.api);
-						if (!api) throw new Error(`pi-opencode-session-header: no API implementation for "${model.api}"`);
-
-						const headers: Headers = { ...(options?.headers ?? {}) };
-						const value = sessionHeaderValue(currentSessionId, SESSION_ID_STYLE);
-						if (injectSessionHeaders(headers, model, value, EXTRA_ID_MATCHES)) {
-							void debugLog(describeInjection('provider', model, headers));
-						}
-						return api.streamSimple(model, context, { ...options, headers });
-					},
-				});
-				registered = true;
-			} catch (error) {
-				// Never let a wrapper failure break the session; layer 1 still applies.
-				await debugLog({
-					at: new Date().toISOString(),
-					layer: 'register-failed',
-					provider: providerId,
-					error: error instanceof Error ? error.message : String(error),
-				});
-			}
-		});
-	}
+	if (!API_LAYER_ENABLED) return;
+	installApiLayer();
 }
