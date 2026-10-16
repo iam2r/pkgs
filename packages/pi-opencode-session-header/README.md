@@ -88,6 +88,12 @@ All optional, via environment variables.
 | `PI_OPENCODE_NO_PROVIDER`   | _(unset)_            | Set to `1` to disable layer 2 and use the event hook alone.                                                                                      |
 | `PI_OPENCODE_HDR_DEBUG`     | _(unset)_            | File path; appends one JSON line per injection.                                                                                                  |
 
+`PI_OPENCODE_PROVIDER` defaults to `Agate`, the gateway this extension was written
+for. On any other machine set it to your own provider id
+(`PI_OPENCODE_PROVIDER=my-gateway`): otherwise layer 2 is never registered and you
+get layer 1 only — enough for the main agent, but not for the direct `streamSimple`
+side requests described above.
+
 ### `raw` vs `canonical`
 
 - `raw` sends Pi's own session id (`01a144cf-8eeb-72cd-aec1-3ee2789673ef`). Correct
