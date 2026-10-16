@@ -1,5 +1,15 @@
 # @iam2r/pi-opencode-session-header
 
+## 0.2.1
+
+### Patch Changes
+
+- 04a9b48: Spell out in the README that `PI_OPENCODE_PROVIDER` defaults to `Agate`.
+
+  On any other machine it has to be set to your own provider id, or layer 2 is
+  never registered and only the event hook applies — enough for the main agent,
+  but not for direct `streamSimple` side requests.
+
 ## 0.2.0
 
 ### Minor Changes
