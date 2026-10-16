@@ -4,46 +4,48 @@
 
 ### Patch Changes
 
-- cd3fc7c: Read the session id lazily, with the live session and the session file as fallbacks.
+- cd3fc7c: Resolve the layer-2 session id on demand, and correct the README.
 
-  Layer 2 sends whatever session id the extension last cached, and that cache was filled
-  only by `session_start` and by the first main-agent request. Both can come too late:
-  Pi awaits event handlers in load order, so one slow handler delays every handler after
-  it, and a side request can arrive while the id is still unknown. Measured with a slow
-  handler ahead of ours, the first `ctx.modelRegistry.streamSimple(...)` call reached the
-  api wrapper with no session id and went out without the header.
+  The wrapper now reads the id instead of only trusting a snapshot: the cached value,
+  then the live session, then the session file name (`<timestamp>_<id>.jsonl`). A
+  context captured before a reload counts as no answer instead of throwing. Extracted
+  to `session-source.ts` with unit tests.
 
-  The id now resolves on demand: the cached value when there is one, then the live
-  session, then the session file name (`<timestamp>_<id>.jsonl`), and a context captured
-  before a reload counts as no answer instead of throwing. Extracted to
-  `session-source.ts` with unit tests.
+  This is hardening, not a fix for a reproduced failure: at this extension's
+  `session_start` the id is already there (measured), so the cache is normally
+  populated first. It matters when that is not the case, since Pi awaits event handlers
+  in load order and one slow handler delays every handler after it.
 
-  Also corrects the README: Pi clears api overrides on `AgentSession.reload()` via
-  `resetApiProviders()`, which is what the per-session re-assert guards against.
+  The README no longer claims the wrapper is wiped by Pi's bootstrap; it names the
+  `resetApiProviders()` reload path, and records the boundary that a side request
+  arriving before any handler of this extension has run cannot carry a session id.
 
 ## 0.3.1
 
 ### Patch Changes
 
-- a8b3aa1: Re-assert the api-layer wrapper on every `session_start`, so layer 2 survives Pi's
-  own bootstrap.
+- a8b3aa1: Re-assert the api-layer wrapper on every `session_start`.
 
-  0.3.0 installed the wrapper while the extension factory ran, but Pi's bootstrap runs
-  _after_ the extension factories and replaces the api-registry entry written there.
-  By the time a session started, the wrapper was gone again: the extension logged
-  `api-installed`, and a direct `ctx.modelRegistry.streamSimple(...)` call — the path
-  layer 2 exists for — still reached the api with no session header.
+  `AgentSession.reload()` (`core/agent-session.js`), which serves `/reload` and session
+  replacement, calls `resetApiProviders()`: every api registration is dropped and only
+  the built-ins are put back. The wrapper is now installed while the factory runs _and_
+  re-asserted on each `session_start`, so it is present again after such a reload.
 
-  The wrapper is now installed at factory time _and_ on every `session_start`. Since
-  the host registry keeps one entry per api and does not say who owns it,
-  `unregisterApiProviders(<our source>)` doubles as the probe: removing our own entry
-  empties the slot while we still own it, and leaves the host's implementation visible
-  when we no longer do — that implementation is then adopted as the new base. Wrappers
-  always delegate to a captured base, never to the registry, so repeated installs
-  cannot stack.
+  Re-installing is idempotent. The host registry keeps one entry per api and does not
+  say who owns it, so `unregisterApiProviders(<our source>)` doubles as the probe:
+  removing our own entry empties the slot while we still own it, and leaves the host's
+  implementation visible when we no longer do — that implementation is then adopted as
+  the new base. Wrappers always delegate to a captured base, never to the registry, so
+  repeated installs cannot stack.
 
   `PI_OPENCODE_HDR_DEBUG` now distinguishes `api-installed` (fresh wrapper, or a new
   base) from `api-reinstalled` (re-asserted unchanged).
+
+  Correction: this entry originally described the wrapper as wiped by Pi's bootstrap
+  after extension loading. That came from a probe that slept inside a `session_start`
+  handler, which delayed this extension's own handler and left the session id unknown,
+  so the header was missing for a different reason. The registry entry was in fact
+  still ours; the reload path above is the real reason to re-assert.
 
 ## 0.3.0
 

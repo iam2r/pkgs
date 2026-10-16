@@ -104,12 +104,21 @@ cannot stack.
 ### Why the session id is read lazily
 
 The api wrapper runs outside any event context, so it needs a session id of its own.
-Caching it at `session_start` is not enough: Pi awaits handlers in load order, so a
-handler that takes time delays every handler after it, and a side request can arrive
-while the id is still unknown — measured with a slow handler ahead of ours, the first
-`ctx.modelRegistry.streamSimple(...)` call went out with no header. The cache is
-refreshed on `session_start` and on every `before_provider_headers`, with the live
-session and the session file name (`<timestamp>_<id>.jsonl`) as fallbacks.
+The cache is filled on `session_start` and refreshed on every `before_provider_headers`,
+and requests read the live session whenever that cache is empty — the session file
+name (`<timestamp>_<id>.jsonl`) is the last resort. A context captured before a reload
+counts as no answer instead of throwing.
+
+This is hardening rather than a fix for a reproduced failure: at this extension's
+`session_start` the id is already available (measured), so the cache is normally
+populated before anything can ask. The fallback matters when it is not — an earlier
+handler that yields for a while delays every handler after it, since Pi awaits them in
+load order, and a session can be asked for a request while it starts.
+
+The remaining boundary is inherent: a side request that arrives before any handler of
+this extension has run cannot be helped. The request carries no session information of
+its own, and Pi exposes no session id outside an event context (`ExtensionAPI` has no
+session getter). Requests after the first handler are covered.
 
 ## Configuration
 
