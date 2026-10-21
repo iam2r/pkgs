@@ -105,8 +105,23 @@ What the extension does for a matching model, right before Pi serializes the req
   opt one model out
 - never mutates a frozen model: it hands the implementation a shallow copy instead
 
+### Where it applies
+
+1. **The session's model registry** (`session_start`, `model_select`) — capabilities
+   the UI reads live on these objects (`AgentSession.supportsThinking()` checks
+   `model.reasoning`), so decorating the registry is what makes thinking levels and
+   the model picker agree with the request builder.
+2. **Before every request** in both layers below — guarantees the model the
+   implementation actually receives is marked, including models a gateway adds after
+   startup, and regardless of what the registry holds.
+
 The decision is per request, so it also covers models added to `models.json` after Pi
 started, and models whose ids a gateway rewrites.
+
+> `pi --list-models` prints the catalog **without a session**, so its `thinking`
+> column still says `no` for gateway models: no `session_start` fires there, and Pi
+> exposes no model-registry handle at extension-load time. Inside a session the model
+> is marked before the first turn.
 
 > Marking a model as reasoning is not free — Pi offers thinking levels for it and may
 > send reasoning parameters. The defaults stay narrow on purpose. If you add a family
@@ -131,6 +146,9 @@ Neither mechanism covers every request path on its own, so both are installed.
 
 Both layers are idempotent with each other: whichever sees the request first sets the
 headers or model flag, and the second one finds nothing left to do.
+
+The registry decoration above is idempotent too — repeated `session_start`s and model
+switches only count models that still lack the flag.
 
 ### Why layer 2 is re-asserted on every session
 
@@ -218,9 +236,10 @@ PI_UPSTREAM_COMPAT_DEBUG=/tmp/oc-headers.log pi -e npm:@iam2r/pi-upstream-compat
 ```
 
 Each injected request appends a line naming the layer (`event` or `api`), the model,
-whether the thinking-mode compat applies to it, and the header values actually sent.
-Other lines report the layer-2 install: `api-installed` (fresh wrapper, or a new base
-after the host replaced ours), `api-reinstalled` (re-asserted unchanged on
+whether the thinking-mode compat applies to it, and the header values actually sent. A
+`registry` line appears when a session start or model switch marks models, with the
+`models` count. Other lines report the layer-2 install: `api-installed` (fresh wrapper,
+or a new base after the host replaced ours), `api-reinstalled` (re-asserted unchanged on
 `session_start`), `api-missing`, `api-incomplete`, `api-failed`.
 
 A request is only ever modified when an injection line appears for it. Thinking-mode

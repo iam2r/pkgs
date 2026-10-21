@@ -28,6 +28,11 @@
  *    extension marks matching ids as reasoning models with that flag, so Pi
  *    replays the field itself. See `thinking.ts`.
  *
+ * Applying the compat happens in three places. The session's model registry is
+ * decorated first, because capabilities the UI reads (`model.reasoning`) live on
+ * those objects; then the two request layers below cover paths that registry
+ * served models never touch.
+ *
  * Two layers, because neither covers every request path on its own:
  *
  *   1. `before_provider_headers` — the official event, emitted from the SDK's
@@ -76,7 +81,13 @@ import { createApiInstaller } from './api-registry.ts';
 import { injectSessionHeaders, parseIdMatches, SESSION_HEADER, CLIENT_HEADER, type Headers, type ModelLike } from './headers.ts';
 import { sessionHeaderValue, type SessionIdStyle } from './session-id.ts';
 import { resolveSessionId, type SessionIdSource } from './session-source.ts';
-import { applyThinkingCompat, DEFAULT_THINKING_ID_MATCHES, matchesThinkingModel } from './thinking.ts';
+import {
+	applyThinkingCompat,
+	decorateRegistryModels,
+	DEFAULT_THINKING_ID_MATCHES,
+	matchesThinkingModel,
+	type ModelRegistryLike,
+} from './thinking.ts';
 
 /** New name first, then the pre-rename name, so existing setups keep working. */
 function envVar(name: string, legacy: string): string | undefined {
@@ -158,6 +169,17 @@ function describeInjection(layer: string, model: ModelLike, headers: Headers): R
 }
 
 /**
+ * Layer 0: mark the session's models, so what the UI reads (`model.reasoning`
+ * drives thinking levels) agrees with what the request builder will do. The api
+ * layer still marks the exact model per request, which covers models a gateway
+ * adds after startup.
+ */
+function decorateSessionModels(registry: ModelRegistryLike | undefined): void {
+	const changed = decorateRegistryModels(registry, THINKING_ID_MATCHES);
+	if (changed > 0) void debugLog({ at: new Date().toISOString(), layer: 'registry', models: changed });
+}
+
+/**
  * Layer 2: wrap the api implementation so every caller is covered, including
  * direct `ctx.modelRegistry.streamSimple` calls. Installed while this factory
  * runs and re-asserted on every `session_start`; see `api-registry.ts`.
@@ -197,6 +219,7 @@ export default function (pi: ExtensionAPI) {
 		// Thinking compat changes model state, not headers: mark it here too, so the
 		// main-agent path does not depend on layer 2 having seen this model first.
 		applyThinkingCompat(model, THINKING_ID_MATCHES);
+		decorateSessionModels(ctx.modelRegistry);
 
 		// Prefer the live id here; the cached one can lag a session switch by the
 		// duration of the event itself.
@@ -215,10 +238,17 @@ export default function (pi: ExtensionAPI) {
 		currentCtx = ctx.sessionManager;
 		currentSessionId = ctx.sessionManager.getSessionId() ?? currentSessionId;
 
+		// Capabilities the UI reads come from these objects.
+		decorateSessionModels(ctx.modelRegistry);
+
 		// Re-assert the wrapper here: the host's own bootstrap runs after the
 		// extension factories and replaces the api-registry entry installed then.
 		if (API_LAYER_ENABLED) installer();
 	});
+
+	// A model picked mid-session is marked before its first turn, so the thinking
+	// UI and the request builder agree without waiting for a request to happen.
+	pi.on('model_select', (_event, ctx) => decorateSessionModels(ctx.modelRegistry));
 
 	if (!API_LAYER_ENABLED) return;
 	installer();

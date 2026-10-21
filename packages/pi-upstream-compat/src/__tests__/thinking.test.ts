@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest';
 
-import { applyThinkingCompat, DEFAULT_THINKING_ID_MATCHES, matchesThinkingModel, REASONING_REPLAY_FLAG } from '../thinking.ts';
+import {
+	applyThinkingCompat,
+	decorateRegistryModels,
+	DEFAULT_THINKING_ID_MATCHES,
+	hasThinkingCompat,
+	matchesThinkingModel,
+	REASONING_REPLAY_FLAG,
+} from '../thinking.ts';
 
 describe('matchesThinkingModel', () => {
 	it('matches a default family inside a gateway-prefixed id', () => {
@@ -79,5 +86,64 @@ describe('applyThinkingCompat', () => {
 		expect(next.reasoning).toBe(true);
 		expect(next.compat).toEqual({ supportsDeveloperRole: true, [REASONING_REPLAY_FLAG]: true });
 		expect(frozen).toEqual({ id: 'minimax-m3', compat: { supportsDeveloperRole: true } });
+	});
+});
+
+describe('hasThinkingCompat', () => {
+	it('requires both the reasoning flag and the replay compat', () => {
+		expect(hasThinkingCompat({ id: 'deepseek-v4', reasoning: true, compat: { [REASONING_REPLAY_FLAG]: true } })).toBe(true);
+		expect(hasThinkingCompat({ id: 'deepseek-v4', reasoning: true, compat: { [REASONING_REPLAY_FLAG]: false } })).toBe(false);
+		expect(hasThinkingCompat({ id: 'deepseek-v4', compat: { [REASONING_REPLAY_FLAG]: true } })).toBe(false);
+		expect(hasThinkingCompat({ id: 'deepseek-v4' })).toBe(false);
+	});
+});
+
+describe('decorateRegistryModels', () => {
+	function registry(models: unknown[], extra: Record<string, unknown> = {}) {
+		return { getAll: () => models, ...extra };
+	}
+
+	it('marks every matching model in place and counts them', () => {
+		const a = { id: 'Agate/deepseek-v4.1-flash' };
+		const b = { id: 'Agate/kimi-k2' };
+		const c = { id: 'Agate/grok-4.7' };
+
+		expect(decorateRegistryModels(registry([a, b, c]))).toBe(2);
+		expect(a).toMatchObject({ reasoning: true, compat: { [REASONING_REPLAY_FLAG]: true } });
+		expect(c).toEqual({ id: 'Agate/grok-4.7' });
+	});
+
+	it('is idempotent across repeated session starts', () => {
+		const model = { id: 'builtin:opencode/deepseek-v4.1-flash-free' };
+		const reg = registry([model]);
+
+		expect(decorateRegistryModels(reg)).toBe(1);
+		expect(decorateRegistryModels(reg)).toBe(0);
+	});
+
+	it('respects an explicit reasoning: false', () => {
+		const model = { id: 'deepseek-v4', reasoning: false };
+
+		expect(decorateRegistryModels(registry([model]))).toBe(0);
+		expect(model).toEqual({ id: 'deepseek-v4', reasoning: false });
+	});
+
+	it('falls back to getAvailable when getAll is absent', () => {
+		const model = { id: 'glm-5.2' };
+
+		expect(decorateRegistryModels({ getAvailable: () => [model] })).toBe(1);
+		expect(model).toMatchObject({ reasoning: true });
+	});
+
+	it('survives a missing or throwing registry', () => {
+		expect(decorateRegistryModels(undefined)).toBe(0);
+		expect(
+			decorateRegistryModels({
+				getAll: () => {
+					throw new Error('nope');
+				},
+			}),
+		).toBe(0);
+		expect(decorateRegistryModels(registry([{ id: 'glm-5.2' }]), [])).toBe(0);
 	});
 });

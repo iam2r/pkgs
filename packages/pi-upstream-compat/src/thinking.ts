@@ -18,6 +18,10 @@
  * replays the field itself. It never overrides an explicit `reasoning: false`
  * and merges into an existing `compat` object.
  *
+ * Two places apply it: the session's model registry (so thinking levels and the
+ * picker agree with the request builder) and the request itself (so the model a
+ * gateway added after startup is covered too).
+ *
  * Caveat: marking a model as reasoning is not free — Pi unlocks its thinking
  * levels for it. The defaults therefore stay narrow (families where thinking
  * mode is certain); extend them with `PI_UPSTREAM_COMPAT_THINKING_MATCH`, and use
@@ -45,6 +49,50 @@ export function matchesThinkingModel(model: ThinkingModelLike, matches: readonly
 	const id = typeof model.id === 'string' ? model.id.toLowerCase() : '';
 	if (!id) return false;
 	return matches.some((match) => match !== '' && id.includes(match));
+}
+
+/** True when the model already carries everything this module would set. */
+export function hasThinkingCompat(model: ThinkingModelLike): boolean {
+	if (model.reasoning !== true) return false;
+	const compat = model.compat && typeof model.compat === 'object' ? (model.compat as Record<string, unknown>) : undefined;
+	return compat?.[REASONING_REPLAY_FLAG] === true;
+}
+
+/** The slice of Pi's `ModelRegistry` this module needs. */
+export interface ModelRegistryLike {
+	getAll?: () => readonly ThinkingModelLike[];
+	getAvailable?: () => readonly ThinkingModelLike[];
+}
+
+/**
+ * Apply the compat to every matching model the registry holds, in place, and
+ * return how many changed.
+ *
+ * Sessions read capabilities off these objects (`AgentSession.supportsThinking`
+ * checks `this.model.reasoning`), so decorating the registry is what makes the
+ * thinking levels and the model picker agree with what the request builder will
+ * do. Request-time application in `api-layer.ts` stays as the guarantee for
+ * models the registry does not know about.
+ *
+ * Never throws: a session must start even if a registry shape changed.
+ */
+export function decorateRegistryModels(
+	registry: ModelRegistryLike | undefined,
+	matches: readonly string[] = DEFAULT_THINKING_ID_MATCHES,
+): number {
+	if (!registry || matches.length === 0) return 0;
+	try {
+		const models = registry.getAll?.() ?? registry.getAvailable?.() ?? [];
+		let changed = 0;
+		for (const model of models) {
+			if (!matchesThinkingModel(model, matches) || hasThinkingCompat(model)) continue;
+			// Explicit `reasoning: false` wins, so a refused apply changes nothing.
+			if (hasThinkingCompat(applyThinkingCompat(model, matches))) changed++;
+		}
+		return changed;
+	} catch {
+		return 0;
+	}
 }
 
 /**
