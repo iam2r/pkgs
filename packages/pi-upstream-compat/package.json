@@ -1,6 +1,6 @@
 {
 	"name": "@iam2r/pi-upstream-compat",
-	"version": "0.5.0",
+	"version": "0.6.0",
 	"private": false,
 	"description": "Pi extension: upstream compatibility shims for models served through third-party gateways — OpenCode session headers and thinking-mode reasoning_content replay, both decided by model id",
 	"keywords": [
