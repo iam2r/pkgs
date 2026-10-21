@@ -22,6 +22,7 @@
 
 import { injectSessionHeaders, type Headers, type ModelLike } from './headers.ts';
 import { sessionHeaderValue, type SessionIdStyle } from './session-id.ts';
+import { applyThinkingCompat } from './thinking.ts';
 
 /** Loose view of a host stream function; each host api has its own narrower type. */
 export type StreamFn = (model: ModelLike, context: unknown, options: StreamOptionsLike | undefined) => unknown;
@@ -32,7 +33,7 @@ export interface StreamOptionsLike {
 }
 
 /** Marks a stream function this package already installed. */
-export const API_WRAP_MARKER = Symbol.for('pi-opencode-session-header/api-wrap');
+export const API_WRAP_MARKER = Symbol.for('pi-upstream-compat/api-wrap');
 
 /** True when `fn` is one of our wrappers, so a reload cannot wrap us twice. */
 export function isWrapped(fn: unknown): boolean {
@@ -44,24 +45,35 @@ export interface ApiLayerOptions {
 	getSessionId: () => string | undefined;
 	style: SessionIdStyle;
 	extraIdMatches: readonly string[];
+	/**
+	 * Model-id fragments that get the thinking-mode compat flag. Applied to the
+	 * model before the implementation builds the request body. Empty disables it.
+	 */
+	thinkingIdMatches?: readonly string[];
 	/** Called once per request that actually got a header, for the debug log. */
 	onInject?: (layer: string, model: ModelLike, headers: Headers) => void;
 }
 
 /**
  * Wrap one stream function so matching OpenCode requests carry the session
- * header. Requests that need nothing are handed the caller's own options object,
- * so non-OpenCode traffic sees no change at all.
+ * header, and thinking-mode models carry the compat flag Pi needs to replay
+ * `reasoning_content`.
+ *
+ * Thinking compat is model state, not a header, so it is applied first and
+ * applies even when no session header is needed. Header-only requests that need
+ * nothing are handed the caller's own options object, so unrelated traffic sees
+ * no change at all.
  */
 export function wrapStreamFn(fn: StreamFn, options: ApiLayerOptions): StreamFn {
 	const wrapped: StreamFn = (model, context, callOptions) => {
+		const effectiveModel = applyThinkingCompat(model, options.thinkingIdMatches ?? []);
 		const headers: Headers = { ...(callOptions?.headers ?? {}) };
 		const value = sessionHeaderValue(options.getSessionId(), options.style);
 		if (!injectSessionHeaders(headers, model, value, options.extraIdMatches)) {
-			return fn(model, context, callOptions);
+			return fn(effectiveModel, context, callOptions);
 		}
 		options.onInject?.('api', model, headers);
-		return fn(model, context, { ...callOptions, headers });
+		return fn(effectiveModel, context, { ...callOptions, headers });
 	};
 	Object.defineProperty(wrapped, API_WRAP_MARKER, { value: true });
 	return wrapped;

@@ -30,7 +30,7 @@ export interface ApiRegistry {
 
 export interface ApiInstallerOptions {
 	registry: ApiRegistry;
-	/** Api ids to wrap, as configured by `PI_OPENCODE_API`. */
+	/** Api ids to wrap, as configured by `PI_UPSTREAM_COMPAT_API`. */
 	apis: readonly string[];
 	/** Identifies our registrations in the host registry. */
 	sourceId: string;

@@ -1,8 +1,8 @@
 {
-	"name": "@iam2r/pi-opencode-session-header",
-	"version": "0.3.3",
+	"name": "@iam2r/pi-upstream-compat",
+	"version": "0.4.0",
 	"private": false,
-	"description": "Pi extension: attach OpenCode's session-affinity headers to any model whose id mentions opencode, including models routed through third-party gateways",
+	"description": "Pi extension: upstream compatibility shims for models served through third-party gateways — OpenCode session headers and thinking-mode reasoning_content replay, both decided by model id",
 	"keywords": [
 		"extension",
 		"gateway",
@@ -11,9 +11,11 @@
 		"pi",
 		"pi-coding-agent",
 		"pi-package",
-		"session"
+		"reasoning",
+		"session",
+		"thinking"
 	],
-	"homepage": "https://github.com/iam2r/pkgs/tree/main/packages/pi-opencode-session-header#readme",
+	"homepage": "https://github.com/iam2r/pkgs/tree/main/packages/pi-upstream-compat#readme",
 	"bugs": {
 		"url": "https://github.com/iam2r/pkgs/issues"
 	},
@@ -21,7 +23,7 @@
 	"repository": {
 		"type": "git",
 		"url": "git+https://github.com/iam2r/pkgs.git",
-		"directory": "packages/pi-opencode-session-header"
+		"directory": "packages/pi-upstream-compat"
 	},
 	"files": [
 		"src",

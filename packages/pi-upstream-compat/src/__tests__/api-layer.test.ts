@@ -114,6 +114,43 @@ describe('wrapStreamFn', () => {
 		expect(calls[0]?.options?.headers).toMatchObject({ 'x-opencode-client': 'other' });
 	});
 
+	it('marks a thinking-family model before the implementation sees it', () => {
+		const { fn, calls } = baseFn();
+		const model: ModelLike & { reasoning?: boolean; compat?: Record<string, unknown> } = {
+			id: 'builtin:opencode/deepseek-v4.1-flash-free',
+			provider: 'Agate',
+		};
+		const wrapped = wrapStreamFn(fn, options({ thinkingIdMatches: ['deepseek', 'kimi'] }));
+
+		wrapped(model, null, {});
+
+		expect(calls[0]?.model).toBe(model);
+		expect(model.reasoning).toBe(true);
+		expect(model.compat?.requiresReasoningContentOnAssistantMessages).toBe(true);
+	});
+
+	it('applies thinking compat even when no session header is needed', () => {
+		const { fn, calls } = baseFn();
+		const model: ModelLike & { reasoning?: boolean } = { id: 'gw/deepseek-v4.1-flash', provider: 'Agate' };
+		const sent: StreamOptionsLike = {};
+
+		wrapStreamFn(fn, options({ thinkingIdMatches: ['deepseek'], getSessionId: () => undefined }))(model, null, sent);
+
+		// Header work stays inert, model state does not.
+		expect(calls[0]?.options).toBe(sent);
+		expect(sent.headers).toBeUndefined();
+		expect(model.reasoning).toBe(true);
+	});
+
+	it('leaves model metadata alone with no thinking matches', () => {
+		const { fn } = baseFn();
+		const model = { id: 'gw/deepseek-v4.1-flash', provider: 'Agate' };
+
+		wrapStreamFn(fn, options())(model, null, {});
+
+		expect(model).toEqual({ id: 'gw/deepseek-v4.1-flash', provider: 'Agate' });
+	});
+
 	it('marks itself so a reload cannot wrap the wrapper', () => {
 		const { fn } = baseFn();
 		const wrapped = wrapStreamFn(fn, options());

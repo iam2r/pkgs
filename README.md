@@ -3,9 +3,9 @@
 Small, focused packages. Published to the public npm registry under the
 [`@iam2r`](https://www.npmjs.com/org/iam2r) scope.
 
-| Package                                                                    | Description                                                                                                                                     |
-| -------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
-| [`@iam2r/pi-opencode-session-header`](packages/pi-opencode-session-header) | Pi extension: attach OpenCode session-affinity headers to any model whose id mentions `opencode`, including models behind third-party gateways. |
+| Package                                                    | Description                                                                                                                                                              |
+| ---------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| [`@iam2r/pi-upstream-compat`](packages/pi-upstream-compat) | Pi extension: upstream compat shims for models behind third-party gateways — OpenCode session headers and thinking-mode `reasoning_content` replay, decided by model id. |
 
 ## Layout
 

@@ -1,19 +1,32 @@
 /**
- * pi-opencode-session-header
+ * pi-upstream-compat
  *
- * Pi only attaches OpenCode's session-affinity headers when the selected model
- * belongs to its own built-in `opencode` / `opencode-go` providers, or when the
- * request baseUrl host is exactly `opencode.ai` — see
- * `pi-coding-agent/dist/core/provider-attribution.js:getSessionHeaders()`.
+ * Two upstream quirks that Pi only handles for its own built-in providers, and
+ * that surface as soon as a model is served through a third-party gateway. Both
+ * decisions are made by MODEL ID here, so they work for any provider.
  *
- * Model ids also travel through third-party gateways, e.g.
- * `builtin:opencode/deepseek-v4.1-flash-free` served by a custom
- * OpenAI-compatible provider. Those requests can never match that gate
- * (`provider` is the gateway, baseUrl host is not `opencode.ai`), so Pi sends no
- * session header at all. Upstream then answers `400 MissingSessionID`, or — when
- * a gateway tolerates the request — mints a fresh id per request and loses
- * prompt-cache affinity. This extension re-applies the same header logic
- * whenever the model id mentions "opencode".
+ * 1. OpenCode session affinity. Pi only attaches OpenCode's session-affinity
+ *    headers when the selected model belongs to its built-in `opencode` /
+ *    `opencode-go` providers, or when the request baseUrl host is exactly
+ *    `opencode.ai` — see
+ *    `pi-coding-agent/dist/core/provider-attribution.js:getSessionHeaders()`.
+ *    Model ids also travel through third-party gateways, e.g.
+ *    `builtin:opencode/deepseek-v4.1-flash-free` served by a custom
+ *    OpenAI-compatible provider. Those requests can never match that gate
+ *    (`provider` is the gateway, baseUrl host is not `opencode.ai`), so Pi sends
+ *    no session header at all. Upstream then answers `400 MissingSessionID`, or
+ *    — when a gateway tolerates the request — mints a fresh id per request and
+ *    loses prompt-cache affinity.
+ *
+ * 2. Thinking-mode replay. DeepSeek-family upstreams require a replayed
+ *    assistant `tool_calls` turn to carry `reasoning_content`, otherwise they
+ *    answer ``400 The `reasoning_content` in the thinking mode must be passed
+ *    back to the API.``. Pi replays `reasoning_content: ""` when a model has
+ *    `compat.requiresReasoningContentOnAssistantMessages`, which its built-in
+ *    `opencode-go` / `deepseek` models set — but a gateway model carries no such
+ *    metadata, and Pi's other detection is URL-based, never id-based. This
+ *    extension marks matching ids as reasoning models with that flag, so Pi
+ *    replays the field itself. See `thinking.ts`.
  *
  * Two layers, because neither covers every request path on its own:
  *
@@ -33,16 +46,23 @@
  * `runtime.pendingProviderRegistrations`, and the host drains that queue once,
  * while extensions load — so such a call returns normally and does nothing.
  *
- * Configuration (all optional):
- *   PI_OPENCODE_API            api id(s) layer 2 wraps, comma separated.
- *                              Default "openai-completions".
- *   PI_OPENCODE_SESSION_STYLE  "raw" (default) or "canonical".
- *   PI_OPENCODE_MODEL_MATCH    extra model-id substrings (comma separated) that
- *                              count as OpenCode too, for gateways that rename
- *                              their upstream models. Added to the built-in
- *                              "opencode" match.
- *   PI_OPENCODE_NO_PROVIDER    set to 1 to disable layer 2 entirely.
- *   PI_OPENCODE_HDR_DEBUG      file path; appends one JSON line per injection.
+ * Configuration (all optional; the pre-rename `PI_OPENCODE_*` names still work):
+ *   PI_UPSTREAM_COMPAT_API            api id(s) layer 2 wraps, comma separated.
+ *                                     Default "openai-completions".
+ *   PI_UPSTREAM_COMPAT_SESSION_STYLE  "raw" (default) or "canonical".
+ *   PI_UPSTREAM_COMPAT_MODEL_MATCH    extra model-id substrings (comma
+ *                                     separated) that count as OpenCode too, for
+ *                                     gateways that rename their upstream
+ *                                     models. Added to the built-in "opencode"
+ *                                     match.
+ *   PI_UPSTREAM_COMPAT_NO_PROVIDER    set to 1 to disable layer 2 entirely.
+ *   PI_UPSTREAM_COMPAT_THINKING_MATCH extra model-id family fragments that get
+ *                                     the thinking-mode compat flag, added to
+ *                                     the defaults (deepseek, kimi, glm,
+ *                                     minimax, mimo).
+ *   PI_UPSTREAM_COMPAT_NO_THINKING    set to 1 to keep model metadata untouched.
+ *   PI_UPSTREAM_COMPAT_DEBUG          file path; appends one JSON line per
+ *                                     injection.
  */
 
 import { appendFile } from 'node:fs/promises';
@@ -56,24 +76,44 @@ import { createApiInstaller } from './api-registry.ts';
 import { injectSessionHeaders, parseIdMatches, SESSION_HEADER, CLIENT_HEADER, type Headers, type ModelLike } from './headers.ts';
 import { sessionHeaderValue, type SessionIdStyle } from './session-id.ts';
 import { resolveSessionId, type SessionIdSource } from './session-source.ts';
+import { applyThinkingCompat, DEFAULT_THINKING_ID_MATCHES, matchesThinkingModel } from './thinking.ts';
+
+/** New name first, then the pre-rename name, so existing setups keep working. */
+function envVar(name: string, legacy: string): string | undefined {
+	return process.env[name] ?? process.env[legacy];
+}
 
 /** api ids layer 2 wraps. Comma separated. */
-const WRAPPED_APIS = parseIdMatches(process.env.PI_OPENCODE_API ?? 'openai-completions');
+const WRAPPED_APIS = parseIdMatches(envVar('PI_UPSTREAM_COMPAT_API', 'PI_OPENCODE_API') ?? 'openai-completions');
 
-/** Set `PI_OPENCODE_NO_PROVIDER=1` to fall back to the event hook alone. */
-const API_LAYER_ENABLED = process.env.PI_OPENCODE_NO_PROVIDER !== '1';
+/** Set `PI_UPSTREAM_COMPAT_NO_PROVIDER=1` to fall back to the event hook alone. */
+const API_LAYER_ENABLED = envVar('PI_UPSTREAM_COMPAT_NO_PROVIDER', 'PI_OPENCODE_NO_PROVIDER') !== '1';
 
 /** Identifies our registrations in the host's api registry. */
-const API_SOURCE = 'pi-opencode-session-header';
+const API_SOURCE = 'pi-upstream-compat';
 
-/** Default style; `PI_OPENCODE_SESSION_STYLE=canonical` overrides it per run. */
-const SESSION_ID_STYLE: SessionIdStyle = process.env.PI_OPENCODE_SESSION_STYLE === 'canonical' ? 'canonical' : 'raw';
+/** Default style; `PI_UPSTREAM_COMPAT_SESSION_STYLE=canonical` overrides it per run. */
+const SESSION_ID_STYLE: SessionIdStyle =
+	envVar('PI_UPSTREAM_COMPAT_SESSION_STYLE', 'PI_OPENCODE_SESSION_STYLE') === 'canonical' ? 'canonical' : 'raw';
 
-/** Extra id substrings that also mark a model; see `PI_OPENCODE_MODEL_MATCH`. */
-const EXTRA_ID_MATCHES = parseIdMatches(process.env.PI_OPENCODE_MODEL_MATCH);
+/** Extra id substrings that also mark a model; see `PI_UPSTREAM_COMPAT_MODEL_MATCH`. */
+const EXTRA_ID_MATCHES = parseIdMatches(envVar('PI_UPSTREAM_COMPAT_MODEL_MATCH', 'PI_OPENCODE_MODEL_MATCH'));
 
 /** Opt-in verification log: set to a file path to record what was injected. */
-const DEBUG_FILE = process.env.PI_OPENCODE_HDR_DEBUG;
+const DEBUG_FILE = envVar('PI_UPSTREAM_COMPAT_DEBUG', 'PI_OPENCODE_HDR_DEBUG');
+
+/** Set `PI_UPSTREAM_COMPAT_NO_THINKING=1` to leave model metadata alone. */
+const THINKING_ENABLED = process.env.PI_UPSTREAM_COMPAT_NO_THINKING !== '1';
+
+/**
+ * Id families that get the thinking-mode compat flag. The env var adds to the
+ * defaults rather than replacing them, so setting one extra family cannot
+ * silently switch DeepSeek off. Opt a single model out with `reasoning: false`
+ * in `models.json`.
+ */
+const THINKING_ID_MATCHES: readonly string[] = THINKING_ENABLED
+	? [...DEFAULT_THINKING_ID_MATCHES, ...parseIdMatches(process.env.PI_UPSTREAM_COMPAT_THINKING_MATCH)]
+	: [];
 
 /**
  * Latest session id, refreshed on every `session_start` (startup, new, resume,
@@ -111,6 +151,7 @@ function describeInjection(layer: string, model: ModelLike, headers: Headers): R
 		modelId: model.id,
 		style: SESSION_ID_STYLE,
 		sessionId: currentSessionId,
+		thinking: matchesThinkingModel(model, THINKING_ID_MATCHES),
 		[SESSION_HEADER]: headers[SESSION_HEADER] ?? null,
 		[CLIENT_HEADER]: headers[CLIENT_HEADER] ?? null,
 	};
@@ -141,6 +182,7 @@ const installer = createApiInstaller({
 		getSessionId: currentOrLiveSessionId,
 		style: SESSION_ID_STYLE,
 		extraIdMatches: EXTRA_ID_MATCHES,
+		thinkingIdMatches: THINKING_ID_MATCHES,
 		onInject: (layer, model, headers) => void debugLog(describeInjection(layer, model, headers)),
 	},
 	report: (event) => void debugLog({ at: new Date().toISOString(), ...event }),
@@ -151,6 +193,10 @@ export default function (pi: ExtensionAPI) {
 	pi.on('before_provider_headers', async (event, ctx) => {
 		const model = ctx.model;
 		if (!model) return;
+
+		// Thinking compat changes model state, not headers: mark it here too, so the
+		// main-agent path does not depend on layer 2 having seen this model first.
+		applyThinkingCompat(model, THINKING_ID_MATCHES);
 
 		// Prefer the live id here; the cached one can lag a session switch by the
 		// duration of the event itself.

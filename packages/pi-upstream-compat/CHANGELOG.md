@@ -1,4 +1,4 @@
-# @iam2r/pi-opencode-session-header
+# @iam2r/pi-upstream-compat
 
 ## 0.3.3
 

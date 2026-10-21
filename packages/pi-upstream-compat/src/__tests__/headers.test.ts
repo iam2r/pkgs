@@ -39,7 +39,7 @@ describe('matchesOpenCodeModel', () => {
 		expect(matchesOpenCodeModel({ id: 'claude-sonnet-4-5', provider: 'anthropic', baseUrl: 'https://api.anthropic.com' })).toBe(false);
 	});
 
-	it('matches extra id substrings from PI_OPENCODE_MODEL_MATCH', () => {
+	it('matches extra id substrings from PI_UPSTREAM_COMPAT_MODEL_MATCH', () => {
 		// A gateway that renamed its upstream models: nothing in the id says
 		// "opencode", so only an explicit extra match can recognise it.
 		const renamed = { id: 'deepseek-v4.1-flash-free', provider: 'Agate', baseUrl: 'https://agate.example.org/v1' };

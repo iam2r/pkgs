@@ -11,7 +11,7 @@ export const MODEL_ID_MATCH = 'opencode';
 /**
  * Normalize a comma-separated match list: trimmed, lowercased, empties dropped.
  *
- * Backs `PI_OPENCODE_MODEL_MATCH`, which widens the built-in match so that a
+ * Backs `PI_UPSTREAM_COMPAT_MODEL_MATCH`, which widens the built-in match so that a
  * gateway which renames its upstream models can still be recognised.
  */
 export function parseIdMatches(raw: string | undefined): string[] {
