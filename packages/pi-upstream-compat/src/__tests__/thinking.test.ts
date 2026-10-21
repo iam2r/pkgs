@@ -135,6 +135,15 @@ describe('decorateRegistryModels', () => {
 		expect(model).toMatchObject({ reasoning: true });
 	});
 
+	it('scopes decoration to one provider when asked', () => {
+		const gateway = { id: 'Agate/deepseek-v4.1-flash', provider: 'Agate' };
+		const builtin = { id: 'deepseek/deepseek-chat', provider: 'deepseek' };
+
+		expect(decorateRegistryModels(registry([gateway, builtin]), undefined, { provider: 'Agate' })).toBe(1);
+		expect(gateway).toMatchObject({ reasoning: true });
+		expect(builtin).toEqual({ id: 'deepseek/deepseek-chat', provider: 'deepseek' });
+	});
+
 	it('survives a missing or throwing registry', () => {
 		expect(decorateRegistryModels(undefined)).toBe(0);
 		expect(

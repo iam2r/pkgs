@@ -174,9 +174,11 @@ function describeInjection(layer: string, model: ModelLike, headers: Headers): R
  * layer still marks the exact model per request, which covers models a gateway
  * adds after startup.
  */
-function decorateSessionModels(registry: ModelRegistryLike | undefined): void {
-	const changed = decorateRegistryModels(registry, THINKING_ID_MATCHES);
-	if (changed > 0) void debugLog({ at: new Date().toISOString(), layer: 'registry', models: changed });
+function decorateSessionModels(registry: ModelRegistryLike | undefined, provider: string | undefined): void {
+	// Scoped to the provider in use: the registry also carries every built-in
+	// provider's catalog, where an id alone is not enough to change capabilities.
+	const changed = decorateRegistryModels(registry, THINKING_ID_MATCHES, { provider });
+	if (changed > 0) void debugLog({ at: new Date().toISOString(), layer: 'registry', provider, models: changed });
 }
 
 /**
@@ -219,7 +221,7 @@ export default function (pi: ExtensionAPI) {
 		// Thinking compat changes model state, not headers: mark it here too, so the
 		// main-agent path does not depend on layer 2 having seen this model first.
 		applyThinkingCompat(model, THINKING_ID_MATCHES);
-		decorateSessionModels(ctx.modelRegistry);
+		decorateSessionModels(ctx.modelRegistry, model.provider);
 
 		// Prefer the live id here; the cached one can lag a session switch by the
 		// duration of the event itself.
@@ -239,7 +241,7 @@ export default function (pi: ExtensionAPI) {
 		currentSessionId = ctx.sessionManager.getSessionId() ?? currentSessionId;
 
 		// Capabilities the UI reads come from these objects.
-		decorateSessionModels(ctx.modelRegistry);
+		decorateSessionModels(ctx.modelRegistry, ctx.model?.provider);
 
 		// Re-assert the wrapper here: the host's own bootstrap runs after the
 		// extension factories and replaces the api-registry entry installed then.
@@ -248,7 +250,7 @@ export default function (pi: ExtensionAPI) {
 
 	// A model picked mid-session is marked before its first turn, so the thinking
 	// UI and the request builder agree without waiting for a request to happen.
-	pi.on('model_select', (_event, ctx) => decorateSessionModels(ctx.modelRegistry));
+	pi.on('model_select', (_event, ctx) => decorateSessionModels(ctx.modelRegistry, ctx.model?.provider));
 
 	if (!API_LAYER_ENABLED) return;
 	installer();

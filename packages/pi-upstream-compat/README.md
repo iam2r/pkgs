@@ -107,10 +107,13 @@ What the extension does for a matching model, right before Pi serializes the req
 
 ### Where it applies
 
-1. **The session's model registry** (`session_start`, `model_select`) — capabilities
-   the UI reads live on these objects (`AgentSession.supportsThinking()` checks
-   `model.reasoning`), so decorating the registry is what makes thinking levels and
-   the model picker agree with the request builder.
+1. **The session's model registry** (`session_start`, `model_select`, header event) —
+   capabilities the UI reads live on these objects
+   (`AgentSession.supportsThinking()` checks `model.reasoning`), so decorating the
+   registry is what makes thinking levels and the model picker agree with the request
+   builder. Decoration is scoped to the provider in use: the registry also carries
+   every built-in provider's catalog, where an id like `deepseek-chat` alone is not
+   enough to justify changing capabilities.
 2. **Before every request** in both layers below — guarantees the model the
    implementation actually receives is marked, including models a gateway adds after
    startup, and regardless of what the registry holds.

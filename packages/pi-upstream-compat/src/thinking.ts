@@ -37,6 +37,7 @@ export const DEFAULT_THINKING_ID_MATCHES: readonly string[] = ['deepseek', 'kimi
 /** Model fields this module inspects. Deliberately loose so a Pi `Model` fits. */
 export interface ThinkingModelLike {
 	id?: unknown;
+	provider?: unknown;
 	reasoning?: unknown;
 	compat?: unknown;
 }
@@ -64,6 +65,12 @@ export interface ModelRegistryLike {
 	getAvailable?: () => readonly ThinkingModelLike[];
 }
 
+/** Narrows registry decoration; `provider` keeps built-in catalogs untouched. */
+export interface DecorateOptions {
+	/** Only decorate models of this provider, e.g. the session's current one. */
+	provider?: string;
+}
+
 /**
  * Apply the compat to every matching model the registry holds, in place, and
  * return how many changed.
@@ -74,17 +81,23 @@ export interface ModelRegistryLike {
  * do. Request-time application in `api-layer.ts` stays as the guarantee for
  * models the registry does not know about.
  *
+ * Pass `provider` to scope it to the provider a session is actually using: the
+ * registry also holds every built-in provider's catalog, and redesignating, say,
+ * `deepseek-chat` as a reasoning model because of its id would be wrong there.
+ *
  * Never throws: a session must start even if a registry shape changed.
  */
 export function decorateRegistryModels(
 	registry: ModelRegistryLike | undefined,
 	matches: readonly string[] = DEFAULT_THINKING_ID_MATCHES,
+	options: DecorateOptions = {},
 ): number {
 	if (!registry || matches.length === 0) return 0;
 	try {
 		const models = registry.getAll?.() ?? registry.getAvailable?.() ?? [];
 		let changed = 0;
 		for (const model of models) {
+			if (options.provider !== undefined && providerOf(model) !== options.provider) continue;
 			if (!matchesThinkingModel(model, matches) || hasThinkingCompat(model)) continue;
 			// Explicit `reasoning: false` wins, so a refused apply changes nothing.
 			if (hasThinkingCompat(applyThinkingCompat(model, matches))) changed++;
@@ -93,6 +106,10 @@ export function decorateRegistryModels(
 	} catch {
 		return 0;
 	}
+}
+
+function providerOf(model: ThinkingModelLike): string | undefined {
+	return typeof model.provider === 'string' ? model.provider : undefined;
 }
 
 /**
