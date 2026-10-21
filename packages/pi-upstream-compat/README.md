@@ -92,7 +92,8 @@ one of these fragments (case-insensitive):
 | `deepseek`, `kimi`, `glm`, `minimax`, `mimo` | thinking upstreams that require the field back |
 
 Add more with `PI_UPSTREAM_COMPAT_THINKING_MATCH` (comma separated, **appended** to
-the defaults — setting one extra family cannot silently switch DeepSeek off).
+the defaults — setting one extra family cannot silently switch DeepSeek off), and skip
+individual ids with `PI_UPSTREAM_COMPAT_THINKING_EXCLUDE`.
 `PI_UPSTREAM_COMPAT_NO_THINKING=1` disables this half of the extension entirely.
 
 What the extension does for a matching model, right before Pi serializes the request:
@@ -101,19 +102,24 @@ What the extension does for a matching model, right before Pi serializes the req
   for the replay), unless the model already says `reasoning: true`
 - sets `compat.requiresReasoningContentOnAssistantMessages = true`, merging into an
   existing `compat` object and keeping its other flags
-- **never** overrides an explicit `reasoning: false` — use that in `models.json` to
-  opt one model out
+- leaves models that Pi's own catalog already defines untouched — for those, Pi's
+  curated metadata is the better answer (and guessing over it by id would turn, say,
+  a non-thinking `deepseek-chat` into a reasoning model)
 - never mutates a frozen model: it hands the implementation a shallow copy instead
+
+`reasoning: false` cannot express an opt-out: Pi's provider composer fills that default
+for every `models.json` model that does not set it, so it is the normal state of the
+gateway models this extension exists for. Use `PI_UPSTREAM_COMPAT_THINKING_EXCLUDE`
+instead.
 
 ### Where it applies
 
-1. **The session's model registry** (`session_start`, `model_select`, header event) —
-   capabilities the UI reads live on these objects
-   (`AgentSession.supportsThinking()` checks `model.reasoning`), so decorating the
-   registry is what makes thinking levels and the model picker agree with the request
-   builder. Decoration is scoped to the provider in use: the registry also carries
-   every built-in provider's catalog, where an id like `deepseek-chat` alone is not
-   enough to justify changing capabilities.
+1. **The session's model registry** (`session_start`, `model_select`,
+   `before_agent_start`, header event) — capabilities the UI reads live on these
+   objects (`AgentSession.supportsThinking()` checks `model.reasoning`), so decorating
+   the registry is what makes thinking levels and the model picker agree with the
+   request builder. Decoration is scoped to the provider in use and skips every model
+   Pi's catalog defines.
 2. **Before every request** in both layers below — guarantees the model the
    implementation actually receives is marked, including models a gateway adds after
    startup, and regardless of what the registry holds.
@@ -128,8 +134,9 @@ started, and models whose ids a gateway rewrites.
 
 > Marking a model as reasoning is not free — Pi offers thinking levels for it and may
 > send reasoning parameters. The defaults stay narrow on purpose. If you add a family
-> that is not actually a thinking model, expect upstream errors; remove it from
-> `PI_UPSTREAM_COMPAT_THINKING_MATCH` or set `reasoning: false` for that model.
+> that is not actually a thinking model, expect upstream errors; drop it from
+> `PI_UPSTREAM_COMPAT_THINKING_MATCH` or list the offending ids in
+> `PI_UPSTREAM_COMPAT_THINKING_EXCLUDE`.
 
 ## Two layers
 
@@ -205,15 +212,16 @@ session getter). Requests after the first handler are covered.
 All optional, via environment variables. The pre-rename `PI_OPENCODE_*` names are
 still read as fallbacks.
 
-| Variable                            | Default              | Meaning                                                                                                        |
-| ----------------------------------- | -------------------- | -------------------------------------------------------------------------------------------------------------- |
-| `PI_UPSTREAM_COMPAT_API`            | `openai-completions` | Api id(s) layer 2 wraps, comma separated. Every provider serving a model with one of these api ids is covered. |
-| `PI_UPSTREAM_COMPAT_SESSION_STYLE`  | `raw`                | `raw` forwards Pi's session id verbatim. `canonical` derives a `ses_…` id instead.                             |
-| `PI_UPSTREAM_COMPAT_MODEL_MATCH`    | _(unset)_            | Extra model-id substrings (comma separated) that also count as OpenCode, for gateways that rename them.        |
-| `PI_UPSTREAM_COMPAT_NO_PROVIDER`    | _(unset)_            | Set to `1` to disable layer 2 and use the event hook alone.                                                    |
-| `PI_UPSTREAM_COMPAT_THINKING_MATCH` | _(unset)_            | Extra model-id fragments that get the thinking-mode compat flag, appended to the defaults.                     |
-| `PI_UPSTREAM_COMPAT_NO_THINKING`    | _(unset)_            | Set to `1` to leave model metadata untouched.                                                                  |
-| `PI_UPSTREAM_COMPAT_DEBUG`          | _(unset)_            | File path; appends one JSON line per injection, plus one per layer-2 install.                                  |
+| Variable                              | Default              | Meaning                                                                                                        |
+| ------------------------------------- | -------------------- | -------------------------------------------------------------------------------------------------------------- |
+| `PI_UPSTREAM_COMPAT_API`              | `openai-completions` | Api id(s) layer 2 wraps, comma separated. Every provider serving a model with one of these api ids is covered. |
+| `PI_UPSTREAM_COMPAT_SESSION_STYLE`    | `raw`                | `raw` forwards Pi's session id verbatim. `canonical` derives a `ses_…` id instead.                             |
+| `PI_UPSTREAM_COMPAT_MODEL_MATCH`      | _(unset)_            | Extra model-id substrings (comma separated) that also count as OpenCode, for gateways that rename them.        |
+| `PI_UPSTREAM_COMPAT_NO_PROVIDER`      | _(unset)_            | Set to `1` to disable layer 2 and use the event hook alone.                                                    |
+| `PI_UPSTREAM_COMPAT_THINKING_MATCH`   | _(unset)_            | Extra model-id fragments that get the thinking-mode compat flag, appended to the defaults.                     |
+| `PI_UPSTREAM_COMPAT_THINKING_EXCLUDE` | _(unset)_            | Model-id fragments that keep their metadata as-is, e.g. a non-thinking model whose id mentions `deepseek`.     |
+| `PI_UPSTREAM_COMPAT_NO_THINKING`      | _(unset)_            | Set to `1` to leave model metadata untouched.                                                                  |
+| `PI_UPSTREAM_COMPAT_DEBUG`            | _(unset)_            | File path; appends one JSON line per injection, plus one per layer-2 install.                                  |
 
 Set `PI_UPSTREAM_COMPAT_API` if your gateway speaks a different api (for example
 `anthropic-messages` or `openai-responses`). Unlike the event hook, layer 2 sees only

@@ -15,8 +15,9 @@
  *
  * This module decides by MODEL ID: an id containing one of the configured family
  * fragments is marked as a reasoning model and receives the compat flag, so Pi
- * replays the field itself. It never overrides an explicit `reasoning: false`
- * and merges into an existing `compat` object.
+ * replays the field itself. It merges into an existing `compat` object and never
+ * touches a model that Pi's own catalog already defines — for those, Pi's
+ * metadata is the better answer.
  *
  * Two places apply it: the session's model registry (so thinking levels and the
  * picker agree with the request builder) and the request itself (so the model a
@@ -24,12 +25,15 @@
  *
  * Caveat: marking a model as reasoning is not free — Pi unlocks its thinking
  * levels for it. The defaults therefore stay narrow (families where thinking
- * mode is certain); extend them with `PI_UPSTREAM_COMPAT_THINKING_MATCH`, and use
- * `reasoning: false` in `models.json` to opt one model out.
+ * mode is certain); extend them with `PI_UPSTREAM_COMPAT_THINKING_MATCH` and
+ * skip ids with `PI_UPSTREAM_COMPAT_THINKING_EXCLUDE`.
  *
- * Pure module: no Pi imports, so it can be unit-tested without the host packages
- * present.
+ * `reasoning: false` cannot express an opt-out: Pi's provider composer fills that
+ * default for every model declared in `models.json` without one, so it is the
+ * normal state of the gateway models this module exists for.
  */
+
+import { getBuiltinModel } from '@earendil-works/pi-ai/providers/all';
 
 /** Default model-id fragments that identify a thinking-mode upstream family. */
 export const DEFAULT_THINKING_ID_MATCHES: readonly string[] = ['deepseek', 'kimi', 'glm', 'minimax', 'mimo'];
@@ -45,11 +49,44 @@ export interface ThinkingModelLike {
 /** The compat flag Pi's request builder reads. */
 export const REASONING_REPLAY_FLAG = 'requiresReasoningContentOnAssistantMessages';
 
+/** Untyped view: the generated catalog only accepts known provider/id literals. */
+const lookupBuiltinModel = getBuiltinModel as unknown as (provider: string, modelId: string) => unknown;
+
+/** Model-id fragments that opt a model back out. */
+export interface ThinkingCompatOptions {
+	/** Id fragments that must keep their metadata as-is. */
+	exclude?: readonly string[];
+}
+
+/**
+ * True when Pi's own catalog already defines this provider/model pair.
+ *
+ * Those models ship with curated `reasoning` / `compat` metadata, and guessing
+ * over it by id would redesignate, say, a non-thinking `deepseek-chat` as a
+ * reasoning model. `getBuiltinModel` is the same table the host composes from.
+ */
+export function isBuiltinModel(model: ThinkingModelLike): boolean {
+	const provider = typeof model.provider === 'string' ? model.provider : undefined;
+	const id = typeof model.id === 'string' ? model.id : undefined;
+	if (!provider || !id) return false;
+	try {
+		return lookupBuiltinModel(provider, id) !== undefined;
+	} catch {
+		return false;
+	}
+}
+
 /** True when `model.id` mentions one of `matches` (case-insensitive, non-empty). */
 export function matchesThinkingModel(model: ThinkingModelLike, matches: readonly string[] = DEFAULT_THINKING_ID_MATCHES): boolean {
 	const id = typeof model.id === 'string' ? model.id.toLowerCase() : '';
 	if (!id) return false;
 	return matches.some((match) => match !== '' && id.includes(match));
+}
+
+/** True when `model.id` mentions one of `exclude` (case-insensitive, non-empty). */
+function isExcluded(model: ThinkingModelLike, exclude: readonly string[] | undefined): boolean {
+	if (!exclude || exclude.length === 0) return false;
+	return matchesThinkingModel(model, exclude);
 }
 
 /** True when the model already carries everything this module would set. */
@@ -65,8 +102,8 @@ export interface ModelRegistryLike {
 	getAvailable?: () => readonly ThinkingModelLike[];
 }
 
-/** Narrows registry decoration; `provider` keeps built-in catalogs untouched. */
-export interface DecorateOptions {
+/** Narrows registry decoration. */
+export interface DecorateOptions extends ThinkingCompatOptions {
 	/** Only decorate models of this provider, e.g. the session's current one. */
 	provider?: string;
 }
@@ -81,10 +118,6 @@ export interface DecorateOptions {
  * do. Request-time application in `api-layer.ts` stays as the guarantee for
  * models the registry does not know about.
  *
- * Pass `provider` to scope it to the provider a session is actually using: the
- * registry also holds every built-in provider's catalog, and redesignating, say,
- * `deepseek-chat` as a reasoning model because of its id would be wrong there.
- *
  * Never throws: a session must start even if a registry shape changed.
  */
 export function decorateRegistryModels(
@@ -98,9 +131,9 @@ export function decorateRegistryModels(
 		let changed = 0;
 		for (const model of models) {
 			if (options.provider !== undefined && providerOf(model) !== options.provider) continue;
-			if (!matchesThinkingModel(model, matches) || hasThinkingCompat(model)) continue;
-			// Explicit `reasoning: false` wins, so a refused apply changes nothing.
-			if (hasThinkingCompat(applyThinkingCompat(model, matches))) changed++;
+			if (!matchesThinkingModel(model, matches) || isExcluded(model, options.exclude)) continue;
+			if (hasThinkingCompat(model)) continue;
+			if (hasThinkingCompat(applyThinkingCompat(model, matches, options))) changed++;
 		}
 		return changed;
 	} catch {
@@ -108,22 +141,22 @@ export function decorateRegistryModels(
 	}
 }
 
-function providerOf(model: ThinkingModelLike): string | undefined {
-	return typeof model.provider === 'string' ? model.provider : undefined;
-}
-
 /**
  * Mark a matching model as a reasoning model with the replay flag.
  *
- * - explicit `reasoning: false` wins (per-model opt-out from `models.json`)
+ * - built-in models are left alone: Pi's catalog knows them better than an id
  * - an existing `compat` object is merged, never replaced
  * - when nothing needs to change the SAME object is returned, so callers can
  *   compare identity to know whether they touched it
  * - frozen models are never mutated: a shallow copy is returned instead
  */
-export function applyThinkingCompat<M extends ThinkingModelLike>(model: M, matches: readonly string[] = DEFAULT_THINKING_ID_MATCHES): M {
-	if (!matchesThinkingModel(model, matches)) return model;
-	if (model.reasoning === false) return model;
+export function applyThinkingCompat<M extends ThinkingModelLike>(
+	model: M,
+	matches: readonly string[] = DEFAULT_THINKING_ID_MATCHES,
+	options: ThinkingCompatOptions = {},
+): M {
+	if (isBuiltinModel(model)) return model;
+	if (!matchesThinkingModel(model, matches) || isExcluded(model, options.exclude)) return model;
 
 	const compat = (model.compat && typeof model.compat === 'object' ? model.compat : {}) as Record<string, unknown>;
 	const needsReasoning = model.reasoning !== true;
@@ -136,7 +169,11 @@ export function applyThinkingCompat<M extends ThinkingModelLike>(model: M, match
 	}
 	// The request builder reads these fields off the model object it receives, so
 	// mutating in place is enough — and keeps identity-based model lookups intact.
-	(model as ThinkingModelLike).reasoning = true;
-	(model as ThinkingModelLike).compat = nextCompat;
+	model.reasoning = true;
+	model.compat = nextCompat;
 	return model;
+}
+
+function providerOf(model: ThinkingModelLike): string | undefined {
+	return typeof model.provider === 'string' ? model.provider : undefined;
 }

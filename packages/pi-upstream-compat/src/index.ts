@@ -65,6 +65,10 @@
  *                                     the thinking-mode compat flag, added to
  *                                     the defaults (deepseek, kimi, glm,
  *                                     minimax, mimo).
+ *   PI_UPSTREAM_COMPAT_THINKING_EXCLUDE
+ *                                     model-id fragments that keep their
+ *                                     metadata as-is, e.g. a non-thinking model
+ *                                     whose id mentions deepseek.
  *   PI_UPSTREAM_COMPAT_NO_THINKING    set to 1 to keep model metadata untouched.
  *   PI_UPSTREAM_COMPAT_DEBUG          file path; appends one JSON line per
  *                                     injection.
@@ -126,6 +130,9 @@ const THINKING_ID_MATCHES: readonly string[] = THINKING_ENABLED
 	? [...DEFAULT_THINKING_ID_MATCHES, ...parseIdMatches(process.env.PI_UPSTREAM_COMPAT_THINKING_MATCH)]
 	: [];
 
+/** Models that keep Pi's metadata even when their id matches a family. */
+const THINKING_EXCLUDES = parseIdMatches(process.env.PI_UPSTREAM_COMPAT_THINKING_EXCLUDE);
+
 /**
  * Latest session id, refreshed on every `session_start` (startup, new, resume,
  * fork, reload) because the api wrapper runs outside any event context.
@@ -177,7 +184,7 @@ function describeInjection(layer: string, model: ModelLike, headers: Headers): R
 function decorateSessionModels(registry: ModelRegistryLike | undefined, provider: string | undefined): void {
 	// Scoped to the provider in use: the registry also carries every built-in
 	// provider's catalog, where an id alone is not enough to change capabilities.
-	const changed = decorateRegistryModels(registry, THINKING_ID_MATCHES, { provider });
+	const changed = decorateRegistryModels(registry, THINKING_ID_MATCHES, { provider, exclude: THINKING_EXCLUDES });
 	if (changed > 0) void debugLog({ at: new Date().toISOString(), layer: 'registry', provider, models: changed });
 }
 
@@ -207,6 +214,7 @@ const installer = createApiInstaller({
 		style: SESSION_ID_STYLE,
 		extraIdMatches: EXTRA_ID_MATCHES,
 		thinkingIdMatches: THINKING_ID_MATCHES,
+		thinkingExcludes: THINKING_EXCLUDES,
 		onInject: (layer, model, headers) => void debugLog(describeInjection(layer, model, headers)),
 	},
 	report: (event) => void debugLog({ at: new Date().toISOString(), ...event }),
@@ -220,7 +228,7 @@ export default function (pi: ExtensionAPI) {
 
 		// Thinking compat changes model state, not headers: mark it here too, so the
 		// main-agent path does not depend on layer 2 having seen this model first.
-		applyThinkingCompat(model, THINKING_ID_MATCHES);
+		applyThinkingCompat(model, THINKING_ID_MATCHES, { exclude: THINKING_EXCLUDES });
 		decorateSessionModels(ctx.modelRegistry, model.provider);
 
 		// Prefer the live id here; the cached one can lag a session switch by the
@@ -251,6 +259,10 @@ export default function (pi: ExtensionAPI) {
 	// A model picked mid-session is marked before its first turn, so the thinking
 	// UI and the request builder agree without waiting for a request to happen.
 	pi.on('model_select', (_event, ctx) => decorateSessionModels(ctx.modelRegistry, ctx.model?.provider));
+
+	// `session_start` can fire before the catalog and the session model are ready,
+	// so the turn-start event is the reliable point where both exist.
+	pi.on('before_agent_start', (_event, ctx) => decorateSessionModels(ctx.modelRegistry, ctx.model?.provider));
 
 	if (!API_LAYER_ENABLED) return;
 	installer();

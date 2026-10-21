@@ -5,6 +5,7 @@ import {
 	decorateRegistryModels,
 	DEFAULT_THINKING_ID_MATCHES,
 	hasThinkingCompat,
+	isBuiltinModel,
 	matchesThinkingModel,
 	REASONING_REPLAY_FLAG,
 } from '../thinking.ts';
@@ -54,11 +55,32 @@ describe('applyThinkingCompat', () => {
 		expect(model).toEqual({ id: 'grok-4.7' });
 	});
 
-	it('does not override an explicit reasoning: false', () => {
-		const model = { id: 'deepseek-v4', reasoning: false };
+	it('marks a gateway model whose reasoning defaulted to false', () => {
+		// Pi's provider composer fills reasoning:false for every models.json model
+		// without one, so this is the normal state of a gateway pin.
+		const model = { id: 'deepseek-v4', provider: 'Agate', reasoning: false };
 
-		expect(applyThinkingCompat(model)).toBe(model);
-		expect(model).toEqual({ id: 'deepseek-v4', reasoning: false });
+		applyThinkingCompat(model);
+
+		expect(model.reasoning).toBe(true);
+	});
+
+	it("leaves models Pi's catalog already defines alone", () => {
+		const builtin = { id: 'deepseek-v4.1-flash', provider: 'opencode-go', reasoning: false };
+		const nonThinking = { id: 'deepseek-chat', provider: 'deepseek', reasoning: false };
+
+		expect(isBuiltinModel(builtin)).toBe(true);
+		expect(applyThinkingCompat(builtin)).toBe(builtin);
+		expect(builtin).toEqual({ id: 'deepseek-v4.1-flash', provider: 'opencode-go', reasoning: false });
+		// Either a catalog entry (left alone) or no entry at all (never guessed at here).
+		if (isBuiltinModel(nonThinking)) expect(nonThinking.reasoning).toBe(false);
+	});
+
+	it('honours id exclusions', () => {
+		const model = { id: 'deepseek-v4-pro', provider: 'Agate' };
+
+		expect(applyThinkingCompat(model, DEFAULT_THINKING_ID_MATCHES, { exclude: ['pro'] })).toBe(model);
+		expect(model).toEqual({ id: 'deepseek-v4-pro', provider: 'Agate' });
 	});
 
 	it('merges into an existing compat object and keeps other flags', () => {
@@ -121,11 +143,20 @@ describe('decorateRegistryModels', () => {
 		expect(decorateRegistryModels(reg)).toBe(0);
 	});
 
-	it('respects an explicit reasoning: false', () => {
-		const model = { id: 'deepseek-v4', reasoning: false };
+	it('marks a gateway model whose reasoning defaulted to false', () => {
+		const model = { id: 'deepseek-v4', provider: 'Agate', reasoning: false };
 
-		expect(decorateRegistryModels(registry([model]))).toBe(0);
-		expect(model).toEqual({ id: 'deepseek-v4', reasoning: false });
+		expect(decorateRegistryModels(registry([model]))).toBe(1);
+		expect(model).toMatchObject({ reasoning: true });
+	});
+
+	it("skips models Pi's catalog defines and excluded ids", () => {
+		const builtin = { id: 'deepseek-v4.1-flash', provider: 'opencode-go', reasoning: false };
+		const excluded = { id: 'deepseek-v4-pro', provider: 'Agate' };
+
+		expect(decorateRegistryModels(registry([builtin, excluded]), DEFAULT_THINKING_ID_MATCHES, { exclude: ['pro'] })).toBe(0);
+		expect(builtin.reasoning).toBe(false);
+		expect(excluded).toEqual({ id: 'deepseek-v4-pro', provider: 'Agate' });
 	});
 
 	it('falls back to getAvailable when getAll is absent', () => {

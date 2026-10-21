@@ -50,6 +50,8 @@ export interface ApiLayerOptions {
 	 * model before the implementation builds the request body. Empty disables it.
 	 */
 	thinkingIdMatches?: readonly string[];
+	/** Model-id fragments that must keep their metadata as-is. */
+	thinkingExcludes?: readonly string[];
 	/** Called once per request that actually got a header, for the debug log. */
 	onInject?: (layer: string, model: ModelLike, headers: Headers) => void;
 }
@@ -66,7 +68,7 @@ export interface ApiLayerOptions {
  */
 export function wrapStreamFn(fn: StreamFn, options: ApiLayerOptions): StreamFn {
 	const wrapped: StreamFn = (model, context, callOptions) => {
-		const effectiveModel = applyThinkingCompat(model, options.thinkingIdMatches ?? []);
+		const effectiveModel = applyThinkingCompat(model, options.thinkingIdMatches ?? [], { exclude: options.thinkingExcludes });
 		const headers: Headers = { ...(callOptions?.headers ?? {}) };
 		const value = sessionHeaderValue(options.getSessionId(), options.style);
 		if (!injectSessionHeaders(headers, model, value, options.extraIdMatches)) {
